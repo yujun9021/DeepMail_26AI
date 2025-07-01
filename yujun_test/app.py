@@ -4,6 +4,12 @@ import os
 import json
 from datetime import datetime
 from dotenv import load_dotenv
+import requests
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+import pickle
+from googleapiclient.discovery import build
 
 # .env 파일 로드
 load_dotenv()
@@ -15,6 +21,13 @@ if api_key:
 else:
     client = None
 
+# Gmail API 설정 - 삭제 권한 포함
+SCOPES = [
+    'https://www.googleapis.com/auth/gmail.readonly',
+    'https://www.googleapis.com/auth/gmail.modify',
+    'https://www.googleapis.com/auth/gmail.labels'
+]
+
 # 페이지 설정
 st.set_page_config(
     page_title="OpenAI 챗봇",
@@ -25,6 +38,75 @@ st.set_page_config(
 # 세션 상태 초기화
 if "messages" not in st.session_state:
     st.session_state.messages = []
+if "gmail_authenticated" not in st.session_state:
+    st.session_state.gmail_authenticated = False
+if "gmail_credentials" not in st.session_state:
+    st.session_state.gmail_credentials = None
+
+# Gmail 인증 함수
+def authenticate_gmail():
+    creds = None
+    # 토큰 파일이 있으면 로드
+    if os.path.exists('token.pickle'):
+        with open('token.pickle', 'rb') as token:
+            creds = pickle.load(token)
+    
+    # 유효한 인증 정보가 없거나 만료된 경우
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            # credentials.json 파일이 필요합니다 (Google Cloud Console에서 다운로드)
+            if os.path.exists('credentials.json'):
+                flow = InstalledAppFlow.from_client_secrets_file(
+                    'credentials.json', SCOPES)
+                creds = flow.run_local_server(port=0)
+            else:
+                st.error("credentials.json 파일이 필요합니다!")
+                return None
+        
+        # 토큰 저장
+        with open('token.pickle', 'wb') as token:
+            pickle.dump(creds, token)
+    
+    return creds
+
+# Gmail 메시지 관련 함수들 추가
+def get_gmail_messages(max_results=10):
+    """Gmail 메시지 목록 가져오기"""
+    try:
+        service = build('gmail', 'v1', credentials=st.session_state.gmail_credentials)
+        results = service.users().messages().list(userId='me', maxResults=max_results).execute()
+        messages = results.get('messages', [])
+        
+        message_details = []
+        for message in messages:
+            msg = service.users().messages().get(userId='me', id=message['id']).execute()
+            headers = msg['payload']['headers']
+            subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '제목 없음')
+            sender = next((h['value'] for h in headers if h['name'] == 'From'), '발신자 없음')
+            
+            message_details.append({
+                'id': message['id'],
+                'subject': subject,
+                'sender': sender,
+                'snippet': msg.get('snippet', '')
+            })
+        
+        return message_details
+    except Exception as e:
+        st.error(f"메일 목록 가져오기 실패: {str(e)}")
+        return []
+
+def delete_gmail_message(message_id):
+    """Gmail 메시지 삭제"""
+    try:
+        service = build('gmail', 'v1', credentials=st.session_state.gmail_credentials)
+        service.users().messages().delete(userId='me', id=message_id).execute()
+        return True
+    except Exception as e:
+        st.error(f"메일 삭제 실패: {str(e)}")
+        return False
 
 # 채팅 기록 저장 함수
 def save_chat_history(messages, filename=None):
@@ -93,6 +175,53 @@ with st.sidebar:
     
     st.markdown("---")
     
+    # Gmail 로그인 섹션
+    st.subheader("📧 Gmail 연결")
+    
+    if not st.session_state.gmail_authenticated:
+        if st.button("🔑 Gmail 로그인", type="primary"):
+            try:
+                creds = authenticate_gmail()
+                if creds:
+                    st.session_state.gmail_credentials = creds
+                    st.session_state.gmail_authenticated = True
+                    st.success("✅ Gmail 로그인 성공!")
+                    st.rerun()
+                else:
+                    st.error("❌ Gmail 로그인 실패")
+            except Exception as e:
+                st.error(f"❌ Gmail 로그인 오류: {str(e)}")
+    else:
+        st.success("✅ Gmail에 로그인되어 있습니다!")
+        
+        # 메일 관리 기능 추가
+        st.markdown("---")
+        st.subheader("📧 메일 관리")
+        
+        if st.button("📬 메일 목록 보기"):
+            messages = get_gmail_messages(5)  # 최근 5개 메일
+            if messages:
+                for msg in messages:
+                    with st.expander(f"📧 {msg['subject']}"):
+                        st.write(f"**발신자:** {msg['sender']}")
+                        st.write(f"**내용:** {msg['snippet']}")
+                        if st.button(f"❌ 삭제", key=f"delete_{msg['id']}"):
+                            if delete_gmail_message(msg['id']):
+                                st.success("✅ 메일이 삭제되었습니다!")
+                                st.rerun()
+            else:
+                st.info("메일이 없습니다.")
+        
+        if st.button("🚪 Gmail 로그아웃"):
+            st.session_state.gmail_authenticated = False
+            st.session_state.gmail_credentials = None
+            if os.path.exists('token.pickle'):
+                os.remove('token.pickle')
+            st.success("✅ Gmail 로그아웃 완료!")
+            st.rerun()
+    
+    st.markdown("---")
+    
     # 모델 선택
     model = st.selectbox(
         "모델 선택",
@@ -112,71 +241,18 @@ with st.sidebar:
     
     st.markdown("---")
     
-    # 채팅 기록 관리
-    st.subheader("💾 채팅 기록")
-    
-    # 현재 대화 저장
-    if st.session_state.messages:
-        custom_filename = st.text_input(
-            "저장할 파일명 (선택사항)",
-            placeholder="my_chat.json"
-        )
-        
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("💾 저장"):
-                if custom_filename and not custom_filename.endswith('.json'):
-                    custom_filename += '.json'
-                
-                filepath = save_chat_history(st.session_state.messages, custom_filename)
-                st.success(f"✅ 저장 완료: {os.path.basename(filepath)}")
-                st.rerun()
-        
-        with col2:
-            if st.button("🗑️ 초기화"):
-                st.session_state.messages = []
-                st.rerun()
-    
-    # 저장된 채팅 목록
-    saved_chats = get_saved_chats()
-    if saved_chats:
-        st.markdown("**저장된 대화:**")
-        for chat in saved_chats:
-            timestamp = datetime.fromisoformat(chat["timestamp"]).strftime("%Y-%m-%d %H:%M")
-            with st.expander(f"📄 {chat['filename']} ({timestamp})"):
-                st.write(f"메시지 수: {chat['total_messages']}")
-                col1, col2 = st.columns(2)
-                with col1:
-                    if st.button(f"📂 로드", key=f"load_{chat['filename']}"):
-                        st.session_state.messages = load_chat_history(chat["filepath"])
-                        st.success("✅ 채팅 기록을 로드했습니다!")
-                        st.rerun()
-                with col2:
-                    if st.button(f"🗑️ 삭제", key=f"delete_{chat['filename']}"):
-                        try:
-                            os.remove(chat["filepath"])
-                            st.success("✅ 파일이 삭제되었습니다!")
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"삭제 실패: {str(e)}")
-    else:
-        st.info("저장된 채팅 기록이 없습니다.")
+    # 🔒 채팅 기록 기능이 비활성화되었습니다.
 
 # 메인 영역
 st.title("🤖 OpenAI 챗봇")
 st.markdown("환경변수에서 API 키를 자동으로 로드합니다!")
 
-# 채팅 컨테이너
-chat_container = st.container()
+for msg in st.session_state.messages:
+    with st.chat_message(msg['role']):
+        st.markdown(msg['content'])
 
-with chat_container:
-    # 이전 메시지들 표시
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-    
-    # 사용자 입력
-    if prompt := st.chat_input("메시지를 입력하세요..."):
+# 채팅 컨테이너
+if prompt := st.chat_input("메시지를 입력하세요..."):
         if not api_key or not client:
             st.error("❌ OPENAI_API_KEY 환경변수가 설정되지 않았습니다!")
             st.info("💡 .env 파일을 생성하고 OPENAI_API_KEY=your_api_key_here를 추가하세요.")
@@ -224,15 +300,3 @@ with chat_container:
                         message_placeholder.error("❌ API 할당량이 소진되었습니다. OpenAI 계정을 확인해주세요.")
                     else:
                         message_placeholder.error(f"❌ 오류가 발생했습니다: {error_message}")
-
-# 하단 정보
-st.markdown("---")
-col1, col2, col3 = st.columns(3)
-with col1:
-    st.markdown("**모델:** " + model)
-with col2:
-    st.markdown("**온도:** " + str(temperature))
-with col3:
-    st.markdown("**메시지 수:** " + str(len(st.session_state.messages)))
-
-st.markdown("**OpenAI 챗봇** - Streamlit + OpenAI API로 제작") 
