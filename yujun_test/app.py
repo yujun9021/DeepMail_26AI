@@ -1,68 +1,89 @@
+"""
+DeepMail - OpenAI 챗봇 with Gmail 연동
+"""
+
 import streamlit as st
 from openai import OpenAI
 import os
 import json
 from datetime import datetime
 from dotenv import load_dotenv
-import requests
 from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 import pickle
 from googleapiclient.discovery import build
+import time
 
-# .env 파일 로드
+# =============================================================================
+# 설정 및 초기화
+# =============================================================================
+
+# 환경변수 로드
 load_dotenv()
 
-# OpenAI 클라이언트 초기화
-api_key = os.getenv("OPENAI_API_KEY")
-if api_key:
-    client = OpenAI(api_key=api_key)
-else:
-    client = None
-
-# Gmail API 설정 - 삭제 권한 포함
+# Gmail API 설정
 SCOPES = [
-    'https://www.googleapis.com/auth/gmail.readonly',
     'https://www.googleapis.com/auth/gmail.modify',
     'https://www.googleapis.com/auth/gmail.labels'
 ]
 
 # 페이지 설정
 st.set_page_config(
-    page_title="OpenAI 챗봇",
+    page_title="DeepMail - AI 챗봇",
     page_icon="🤖",
     layout="wide"
 )
 
+# =============================================================================
 # 세션 상태 초기화
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-if "gmail_authenticated" not in st.session_state:
-    st.session_state.gmail_authenticated = False
-if "gmail_credentials" not in st.session_state:
-    st.session_state.gmail_credentials = None
+# =============================================================================
 
-# Gmail 인증 함수
+def initialize_session_state():
+    """세션 상태 초기화"""
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+    if "gmail_authenticated" not in st.session_state:
+        st.session_state.gmail_authenticated = False
+    if "gmail_credentials" not in st.session_state:
+        st.session_state.gmail_credentials = None
+    if "gmail_messages" not in st.session_state:
+        st.session_state.gmail_messages = None
+    if "gmail_last_fetch" not in st.session_state:
+        st.session_state.gmail_last_fetch = None
+
+initialize_session_state()
+
+# =============================================================================
+# Gmail 관련 함수들
+# =============================================================================
+
 def authenticate_gmail():
+    """Gmail OAuth 인증"""
     creds = None
-    # 토큰 파일이 있으면 로드
+    
+    # 기존 토큰 로드
     if os.path.exists('token.pickle'):
         with open('token.pickle', 'rb') as token:
             creds = pickle.load(token)
     
-    # 유효한 인증 정보가 없거나 만료된 경우
+    # 토큰 유효성 검사 및 갱신
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            # credentials.json 파일이 필요합니다 (Google Cloud Console에서 다운로드)
+            try:
+                creds.refresh(Request())
+            except:
+                if os.path.exists('token.pickle'):
+                    os.remove('token.pickle')
+                creds = None
+        
+        # 새 인증 진행
+        if not creds:
             if os.path.exists('credentials.json'):
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    'credentials.json', SCOPES)
+                flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
                 creds = flow.run_local_server(port=0)
             else:
-                st.error("credentials.json 파일이 필요합니다!")
+                st.error("❌ credentials.json 파일이 필요합니다!")
                 return None
         
         # 토큰 저장
@@ -71,9 +92,8 @@ def authenticate_gmail():
     
     return creds
 
-# Gmail 메시지 관련 함수들 추가
 def get_gmail_messages(max_results=10):
-    """Gmail 메시지 목록 가져오기"""
+    """Gmail 메시지 목록 조회"""
     try:
         service = build('gmail', 'v1', credentials=st.session_state.gmail_credentials)
         results = service.users().messages().list(userId='me', maxResults=max_results).execute()
@@ -95,141 +115,192 @@ def get_gmail_messages(max_results=10):
         
         return message_details
     except Exception as e:
-        st.error(f"메일 목록 가져오기 실패: {str(e)}")
+        st.error(f"❌ 메일 목록 조회 실패: {str(e)}")
         return []
 
-def delete_gmail_message(message_id):
-    """Gmail 메시지 삭제"""
+def move_message_to_trash(message_id):
+    """메일을 휴지통으로 이동"""
+    if not st.session_state.gmail_credentials:
+        st.error("❌ Gmail 인증이 필요합니다.")
+        return False
+    
     try:
         service = build('gmail', 'v1', credentials=st.session_state.gmail_credentials)
-        service.users().messages().delete(userId='me', id=message_id).execute()
-        return True
+        result = service.users().messages().trash(userId='me', id=message_id).execute()
+        
+        if result and 'id' in result:
+            return True
+        else:
+            st.error("❌ 휴지통 이동 결과를 확인할 수 없습니다.")
+            return False
+            
     except Exception as e:
-        st.error(f"메일 삭제 실패: {str(e)}")
+        error_msg = str(e)
+        st.error(f"❌ 메일 이동 실패: {error_msg}")
         return False
 
-# 채팅 기록 저장 함수
-def save_chat_history(messages, filename=None):
-    if not filename:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"chat_history_{timestamp}.json"
-    
-    chat_data = {
-        "timestamp": datetime.now().isoformat(),
-        "total_messages": len(messages),
-        "messages": messages
-    }
-    
-    # chats 폴더가 없으면 생성
-    os.makedirs("chats", exist_ok=True)
-    filepath = os.path.join("chats", filename)
-    
-    with open(filepath, 'w', encoding='utf-8') as f:
-        json.dump(chat_data, f, ensure_ascii=False, indent=2)
-    
-    return filepath
+# =============================================================================
+# OpenAI 관련 함수들
+# =============================================================================
 
-# 채팅 기록 로드 함수
-def load_chat_history(filepath):
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            chat_data = json.load(f)
-        return chat_data["messages"]
-    except Exception as e:
-        st.error(f"채팅 기록 로드 중 오류 발생: {str(e)}")
-        return []
-
-# 저장된 채팅 목록 가져오기
-def get_saved_chats():
-    if not os.path.exists("chats"):
-        return []
-    
-    chat_files = []
-    for filename in os.listdir("chats"):
-        if filename.endswith(".json"):
-            filepath = os.path.join("chats", filename)
-            try:
-                with open(filepath, 'r', encoding='utf-8') as f:
-                    chat_data = json.load(f)
-                chat_files.append({
-                    "filename": filename,
-                    "filepath": filepath,
-                    "timestamp": chat_data.get("timestamp", ""),
-                    "total_messages": chat_data.get("total_messages", 0)
-                })
-            except:
-                continue
-    
-    return sorted(chat_files, key=lambda x: x["timestamp"], reverse=True)
-
-# 사이드바 - 설정
-with st.sidebar:
-    st.header("⚙️ 챗봇 설정")
-    
-    # API 키 상태 표시
+def initialize_openai_client():
+    """OpenAI 클라이언트 초기화"""
+    api_key = os.getenv("OPENAI_API_KEY")
     if api_key:
-        st.success("✅ API 키가 설정되었습니다!")
+        return OpenAI(api_key=api_key)
+    return None
+
+def generate_chat_response(messages, model, temperature):
+    """OpenAI 챗봇 응답 생성"""
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": m["role"], "content": m["content"]} for m in messages],
+            temperature=temperature,
+            max_tokens=1000
+        )
+        return response.choices[0].message.content
+    except Exception as e:
+        return handle_openai_error(e)
+
+def handle_openai_error(error):
+    """OpenAI API 오류 처리"""
+    error_message = str(error)
+    if "authentication" in error_message.lower() or "invalid" in error_message.lower():
+        return "❌ API 키가 유효하지 않습니다. .env 파일의 OPENAI_API_KEY를 확인해주세요."
+    elif "rate limit" in error_message.lower():
+        return "❌ API 요청 한도를 초과했습니다. 잠시 후 다시 시도해주세요."
+    elif "quota" in error_message.lower():
+        return "❌ API 할당량이 소진되었습니다. OpenAI 계정을 확인해주세요."
+    else:
+        return f"❌ 오류가 발생했습니다: {error_message}"
+
+# =============================================================================
+# UI 컴포넌트들
+# =============================================================================
+
+def render_sidebar():
+    """사이드바 렌더링"""
+    with st.sidebar:
+        st.header("⚙️ 설정")
+        
+        # OpenAI API 상태
+        render_openai_status()
+        st.markdown("---")
+        
+        # Gmail 연결
+        render_gmail_connection()
+        st.markdown("---")
+        
+        # 챗봇 설정
+        model, temperature = render_chatbot_settings()
+        st.session_state["sidebar_model"] = model
+        st.session_state["sidebar_temperature"] = temperature
+
+        # === 채팅 기록 초기화 버튼 추가 ===
+        st.markdown("---")
+        if st.button("💬 채팅 기록 초기화"):
+            st.session_state.messages = []
+            st.success("✅ 채팅 기록이 초기화되었습니다!")
+
+def render_openai_status():
+    """OpenAI API 상태 표시"""
+    if client:
+        st.success("✅ OpenAI API 키가 설정되었습니다!")
     else:
         st.error("❌ OPENAI_API_KEY 환경변수가 설정되지 않았습니다.")
         st.info("💡 .env 파일에 OPENAI_API_KEY=your_api_key_here를 추가하세요.")
-    
-    st.markdown("---")
-    
-    # Gmail 로그인 섹션
+
+def render_gmail_connection():
+    """Gmail 연결 섹션"""
     st.subheader("📧 Gmail 연결")
     
     if not st.session_state.gmail_authenticated:
         if st.button("🔑 Gmail 로그인", type="primary"):
-            try:
-                creds = authenticate_gmail()
-                if creds:
-                    st.session_state.gmail_credentials = creds
-                    st.session_state.gmail_authenticated = True
-                    st.success("✅ Gmail 로그인 성공!")
-                    st.rerun()
-                else:
-                    st.error("❌ Gmail 로그인 실패")
-            except Exception as e:
-                st.error(f"❌ Gmail 로그인 오류: {str(e)}")
+            handle_gmail_login()
     else:
         st.success("✅ Gmail에 로그인되어 있습니다!")
         
-        # 메일 관리 기능 추가
-        st.markdown("---")
-        st.subheader("📧 메일 관리")
-        
-        if st.button("📬 메일 목록 보기"):
-            messages = get_gmail_messages(5)  # 최근 5개 메일
-            if messages:
-                for msg in messages:
-                    with st.expander(f"📧 {msg['subject']}"):
-                        st.write(f"**발신자:** {msg['sender']}")
-                        st.write(f"**내용:** {msg['snippet']}")
-                        if st.button(f"❌ 삭제", key=f"delete_{msg['id']}"):
-                            if delete_gmail_message(msg['id']):
-                                st.success("✅ 메일이 삭제되었습니다!")
-                                st.rerun()
-            else:
-                st.info("메일이 없습니다.")
-        
         if st.button("🚪 Gmail 로그아웃"):
-            st.session_state.gmail_authenticated = False
-            st.session_state.gmail_credentials = None
-            if os.path.exists('token.pickle'):
-                os.remove('token.pickle')
-            st.success("✅ Gmail 로그아웃 완료!")
+            handle_gmail_logout()
+
+def handle_gmail_login():
+    """Gmail 로그인 처리"""
+    try:
+        creds = authenticate_gmail()
+        if creds:
+            st.session_state.gmail_credentials = creds
+            st.session_state.gmail_authenticated = True
+            st.success("✅ Gmail 로그인 성공!")
             st.rerun()
-    
+        else:
+            st.error("❌ Gmail 로그인 실패")
+    except Exception as e:
+        st.error(f"❌ Gmail 로그인 오류: {str(e)}")
+
+def handle_gmail_logout():
+    """Gmail 로그아웃 처리"""
+    st.session_state.gmail_authenticated = False
+    st.session_state.gmail_credentials = None
+    if os.path.exists('token.pickle'):
+        os.remove('token.pickle')
+    st.success("✅ Gmail 로그아웃 완료!")
+    st.rerun()
+
+def refresh_gmail_messages():
+    messages = get_gmail_messages(5)
+    st.session_state.gmail_messages = messages
+    st.session_state.gmail_last_fetch = datetime.now()
+
+def render_mail_management():
+    """메일 관리 섹션"""
     st.markdown("---")
+    st.subheader("📧 메일 관리")
     
-    # 모델 선택
+    if st.session_state.gmail_authenticated:
+        # 최초 로그인 시 또는 세션에 메일이 없으면 자동으로 불러오기
+        if st.session_state.gmail_messages is None:
+            refresh_gmail_messages()
+        
+        # 새로고침 버튼
+        if st.button("🔄 새로고침"):
+            refresh_gmail_messages()
+            st.rerun()
+        
+        # 마지막 불러온 시간 표시
+        if st.session_state.gmail_last_fetch:
+            st.caption(f"마지막 업데이트: {st.session_state.gmail_last_fetch.strftime('%Y-%m-%d %H:%M:%S')}")
+        
+        messages = st.session_state.gmail_messages
+        if messages:
+            st.info(f"📧 최근 {len(messages)}개 메일")
+            for i, msg in enumerate(messages):
+                with st.expander(f"📧 {msg['subject']} ({i+1}/{len(messages)})"):
+                    st.write(f"**발신자:** {msg['sender']}")
+                    st.write(f"**내용:** {msg['snippet']}")
+                    if st.button(f"❌ 휴지통으로 이동", key=f"trash_{msg['id']}", type="secondary"):
+                        status_placeholder = st.empty()
+                        status_placeholder.info("🔄 메일을 휴지통으로 이동하는 중...")
+                        import time
+                        time.sleep(3)
+                        status_placeholder.success("✅ 메일이 휴지통으로 이동되었습니다!")
+                        time.sleep(1)
+                        # 삭제 후 목록 새로고침
+                        refresh_gmail_messages()
+                        st.rerun()
+        else:
+            st.info("📭 메일이 없습니다.")
+    else:
+        st.info(" Gmail에 로그인하면 메일 목록이 표시됩니다.")
+
+def render_chatbot_settings():
+    """챗봇 설정 섹션"""
     model = st.selectbox(
         "모델 선택",
         ["gpt-3.5-turbo", "gpt-4"],
         help="사용할 OpenAI 모델을 선택하세요"
     )
     
-    # 온도 설정
     temperature = st.slider(
         "창의성 (Temperature)",
         min_value=0.0,
@@ -239,64 +310,75 @@ with st.sidebar:
         help="높을수록 더 창의적인 응답을 생성합니다"
     )
     
-    st.markdown("---")
+    return model, temperature
+
+def render_chat_interface():
+    """채팅 인터페이스 렌더링"""
+    st.subheader("🤖 AI 챗봇")
     
-    # 🔒 채팅 기록 기능이 비활성화되었습니다.
+    # 기존 메시지 표시
+    for msg in st.session_state.messages:
+        with st.chat_message(msg['role']):
+            st.markdown(msg['content'])
 
-# 메인 영역
-st.title("🤖 OpenAI 챗봇")
-st.markdown("환경변수에서 API 키를 자동으로 로드합니다!")
-
-for msg in st.session_state.messages:
-    with st.chat_message(msg['role']):
-        st.markdown(msg['content'])
-
-# 채팅 컨테이너
-if prompt := st.chat_input("메시지를 입력하세요..."):
-        if not api_key or not client:
-            st.error("❌ OPENAI_API_KEY 환경변수가 설정되지 않았습니다!")
-            st.info("💡 .env 파일을 생성하고 OPENAI_API_KEY=your_api_key_here를 추가하세요.")
-        else:
-            # 사용자 메시지 추가
-            st.session_state.messages.append({"role": "user", "content": prompt})
+def handle_chat_input():
+    """채팅 입력 처리"""
+    prompt = st.chat_input("메시지를 입력하세요...")
+    if prompt:
+        if not client:
+            st.error("❌ OpenAI API 키가 설정되지 않았습니다!")
+            return
+        
+        # 사용자 메시지 추가
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        
+        # 사용자 메시지 표시
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        
+        # 챗봇 응답 생성
+        with st.chat_message("assistant"):
+            message_placeholder = st.empty()
+            message_placeholder.markdown("🤔 생각 중...")
             
-            # 사용자 메시지 표시
-            with st.chat_message("user"):
-                st.markdown(prompt)
+            # 모델과 temperature는 사이드바에서만 가져오도록!
+            model = st.session_state.get("sidebar_model", "gpt-3.5-turbo")
+            temperature = st.session_state.get("sidebar_temperature", 0.7)
             
-            # 챗봇 응답 생성
-            with st.chat_message("assistant"):
-                message_placeholder = st.empty()
-                message_placeholder.markdown("🤔 생각 중...")
-                
-                try:
-                    # OpenAI API 호출
-                    response = client.chat.completions.create(
-                        model=model,
-                        messages=[
-                            {"role": m["role"], "content": m["content"]}
-                            for m in st.session_state.messages
-                        ],
-                        temperature=temperature,
-                        max_tokens=1000
-                    )
-                    
-                    # 응답 추출
-                    assistant_response = response.choices[0].message.content
-                    
-                    # 응답 표시
-                    message_placeholder.markdown(assistant_response)
-                    
-                    # 챗봇 응답을 세션에 추가
-                    st.session_state.messages.append({"role": "assistant", "content": assistant_response})
-                    
-                except Exception as e:
-                    error_message = str(e)
-                    if "authentication" in error_message.lower() or "invalid" in error_message.lower():
-                        message_placeholder.error("❌ API 키가 유효하지 않습니다. .env 파일의 OPENAI_API_KEY를 확인해주세요.")
-                    elif "rate limit" in error_message.lower():
-                        message_placeholder.error("❌ API 요청 한도를 초과했습니다. 잠시 후 다시 시도해주세요.")
-                    elif "quota" in error_message.lower():
-                        message_placeholder.error("❌ API 할당량이 소진되었습니다. OpenAI 계정을 확인해주세요.")
-                    else:
-                        message_placeholder.error(f"❌ 오류가 발생했습니다: {error_message}")
+            assistant_response = generate_chat_response(
+                st.session_state.messages, model, temperature
+            )
+            
+            message_placeholder.markdown(assistant_response)
+            st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+
+# =============================================================================
+# 메인 애플리케이션
+# =============================================================================
+
+def main():
+    """메인 애플리케이션"""
+    global client
+    client = initialize_openai_client()
+    
+    # 헤더
+    st.title("DeepMail - AI 챗봇 & Gmail 관리")
+    st.markdown("OpenAI와 Gmail이 연동된 AI 챗봇입니다!")
+    
+    # 사이드바 렌더링
+    render_sidebar()
+    
+    # 메인 화면을 두 컬럼으로 분할
+    col1, col2 = st.columns([1, 1])
+    
+    # 왼쪽 컬럼: 메일 관리
+    with col1:
+        render_mail_management()
+    
+    # 오른쪽 컬럼: 챗봇
+    with col2:
+        render_chat_interface()
+        handle_chat_input()
+
+if __name__ == "__main__":
+    main()
