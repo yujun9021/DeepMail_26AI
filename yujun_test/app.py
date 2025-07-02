@@ -15,6 +15,13 @@ from google.auth.transport.requests import Request
 import pickle
 from googleapiclient.discovery import build
 import time
+import email
+from email import policy
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
+from email import encoders
+import quopri
 
 # =============================================================================
 # 설정 및 초기화
@@ -56,8 +63,8 @@ def initialize_session_state():
         st.session_state.mail_page = 0
     if "mail_page_size" not in st.session_state:
         st.session_state.mail_page_size = 5
-    if "selected_mail_index" not in st.session_state:
-        st.session_state.selected_mail_index = None
+    if "needs_refresh" not in st.session_state:
+        st.session_state.needs_refresh = False
 
 initialize_session_state()
 
@@ -204,6 +211,244 @@ def get_mail_content(index):
             "error": f"{index+1}번 메일이 존재하지 않습니다."
         }
 
+def get_raw_mail_content(message_id):
+    """Raw 형식으로 메일 가져오기"""
+    try:
+        service = build('gmail', 'v1', credentials=st.session_state.gmail_credentials)
+        msg = service.users().messages().get(userId='me', id=message_id, format='raw').execute()
+        
+        # Base64 디코딩
+        import base64
+        raw_data = base64.urlsafe_b64decode(msg['raw'])
+        
+        # 이메일 파싱
+        email_message = email.message_from_bytes(raw_data, policy=policy.default)
+        
+        return email_message
+        
+    except Exception as e:
+        st.error(f"Raw 메일 가져오기 실패: {str(e)}")
+        return None
+
+def extract_text_from_email(email_message):
+    """이메일에서 텍스트 추출"""
+    text_content = ""
+    html_content = ""
+    
+    if email_message.is_multipart():
+        for part in email_message.walk():
+            content_type = part.get_content_type()
+            content_disposition = str(part.get("Content-Disposition"))
+            
+            # 첨부파일이 아닌 경우만 처리
+            if "attachment" not in content_disposition:
+                if content_type == "text/plain":
+                    try:
+                        text_content += part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                    except:
+                        text_content += part.get_payload(decode=True).decode('latin-1', errors='ignore')
+                elif content_type == "text/html":
+                    try:
+                        html_content += part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                    except:
+                        html_content += part.get_payload(decode=True).decode('latin-1', errors='ignore')
+    else:
+        # 단일 파트 메일
+        content_type = email_message.get_content_type()
+        if content_type == "text/plain":
+            try:
+                text_content = email_message.get_payload(decode=True).decode('utf-8', errors='ignore')
+            except:
+                text_content = email_message.get_payload(decode=True).decode('latin-1', errors='ignore')
+        elif content_type == "text/html":
+            try:
+                html_content = email_message.get_payload(decode=True).decode('utf-8', errors='ignore')
+            except:
+                html_content = email_message.get_payload(decode=True).decode('latin-1', errors='ignore')
+    
+    return text_content, html_content
+
+def extract_attachments_from_email(email_message):
+    """이메일에서 첨부파일 추출"""
+    attachments = []
+    
+    if email_message.is_multipart():
+        for part in email_message.walk():
+            content_disposition = str(part.get("Content-Disposition"))
+            
+            if "attachment" in content_disposition:
+                filename = part.get_filename()
+                if filename:
+                    try:
+                        file_data = part.get_payload(decode=True)
+                        attachments.append({
+                            'filename': filename,
+                            'data': file_data,
+                            'content_type': part.get_content_type(),
+                            'size': len(file_data)
+                        })
+                    except Exception as e:
+                        st.warning(f"첨부파일 {filename} 처리 실패: {str(e)}")
+    
+    return attachments
+
+def get_mail_full_content(message_id):
+    """메일의 전체 내용을 가져오는 함수 (Raw 형식 사용)"""
+    try:
+        # Raw 형식으로 메일 가져오기
+        email_message = get_raw_mail_content(message_id)
+        if not email_message:
+            return {
+                'subject': '오류',
+                'from': '오류',
+                'to': '오류',
+                'date': '오류',
+                'body_text': '메일을 가져올 수 없습니다.',
+                'body_html': '',
+                'attachments': [],
+                'error': True
+            }
+        
+        # 헤더 정보 추출
+        subject = email_message.get('Subject', '제목 없음')
+        from_addr = email_message.get('From', '발신자 없음')
+        to_addr = email_message.get('To', '수신자 없음')
+        date = email_message.get('Date', '날짜 없음')
+        
+        # 본문 추출
+        text_content, html_content = extract_text_from_email(email_message)
+        
+        # 첨부파일 추출
+        attachments = extract_attachments_from_email(email_message)
+        
+        return {
+            'subject': subject,
+            'from': from_addr,
+            'to': to_addr,
+            'date': date,
+            'body_text': text_content,
+            'body_html': html_content,
+            'attachments': attachments,
+            'error': False
+        }
+        
+    except Exception as e:
+        return {
+            'subject': '오류',
+            'from': '오류',
+            'to': '오류',
+            'date': '오류',
+            'body_text': f'메일 내용을 가져오는 중 오류가 발생했습니다: {str(e)}',
+            'body_html': '',
+            'attachments': [],
+            'error': True
+        }
+
+def debug_mail_structure(message_id):
+    """메일 구조를 디버깅하는 함수"""
+    try:
+        service = build('gmail', 'v1', credentials=st.session_state.gmail_credentials)
+        msg = service.users().messages().get(userId='me', id=message_id, format='full').execute()
+        
+        st.write("**🔍 메일 구조 디버깅:**")
+        st.write(f"**메일 ID:** {msg.get('id')}")
+        st.write(f"**스니펫:** {msg.get('snippet')}")
+        
+        payload = msg.get('payload', {})
+        st.write(f"**메인 MIME 타입:** {payload.get('mimeType')}")
+        st.write(f"**Body 데이터 존재:** {bool(payload.get('body', {}).get('data'))}")
+        st.write(f"**Parts 존재:** {bool(payload.get('parts'))}")
+        st.write(f"**Parts 개수:** {len(payload.get('parts', []))}")
+        
+        if payload.get('parts'):
+            st.write("**Parts 상세 정보:**")
+            for i, part in enumerate(payload['parts']):
+                st.write(f"  파트 {i+1}: {part.get('mimeType')} - Body 데이터: {bool(part.get('body', {}).get('data'))}")
+                if part.get('body', {}).get('data'):
+                    st.write(f"    데이터 길이: {len(part['body']['data'])}")
+        
+        return msg
+        
+    except Exception as e:
+        st.error(f"디버깅 중 오류: {str(e)}")
+        return None
+
+def show_mail_original_format(message_id, mail_index):
+    """메일의 원본 형식을 표시하는 함수"""
+    st.subheader(f"📧 [{mail_index}] 메일 원본 형식")
+    
+    # 로딩 표시
+    with st.spinner("메일 원본 데이터를 가져오는 중..."):
+        full_content = get_mail_full_content(message_id)
+    
+    if 'error' in full_content:
+        st.error(full_content['error'])
+        return
+    
+    # 탭으로 구분하여 표시
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 전체 구조", "📧 헤더 정보", "📄 본문 내용", "📎 첨부파일", "🔍 상세 분석"])
+    
+    with tab1:
+        st.write("**전체 메일 구조 (JSON):**")
+        st.json(full_content)
+    
+    with tab2:
+        st.write("**헤더 정보:**")
+        headers = full_content.get('headers', {})
+        if headers:
+            for key, value in headers.items():
+                st.write(f"**{key}:** {value}")
+        else:
+            st.info("헤더 정보가 없습니다.")
+    
+    with tab3:
+        st.write("**본문 내용:**")
+        body_text = full_content.get('body_text', '')
+        if body_text:
+            st.text_area("메일 본문", body_text, height=300)
+        else:
+            st.info("본문 내용이 없습니다.")
+    
+    with tab4:
+        st.write("**첨부파일 및 멀티파트 정보:**")
+        parts = full_content.get('parts', [])
+        if parts:
+            for i, part in enumerate(parts):
+                with st.expander(f"파트 {i+1}: {part.get('mimeType', 'Unknown')}"):
+                    st.json(part)
+                    if 'body_text' in part:
+                        st.text_area(f"파트 {i+1} 내용", part['body_text'], height=150)
+        else:
+            st.info("첨부파일이 없습니다.")
+    
+    with tab5:
+        st.write("**상세 분석:**")
+        
+        # 기본 정보
+        col1, col2 = st.columns(2)
+        with col1:
+            st.metric("메일 크기", f"{full_content.get('sizeEstimate', 0)} bytes")
+            st.metric("라벨 수", len(full_content.get('labelIds', [])))
+        
+        with col2:
+            st.metric("파트 수", len(full_content.get('parts', [])))
+            st.metric("헤더 수", len(full_content.get('headers', {})))
+        
+        # 라벨 정보
+        if full_content.get('labelIds'):
+            st.write("**라벨:**")
+            for label in full_content['labelIds']:
+                st.write(f"- {label}")
+        
+        # MIME 타입 분석
+        payload = full_content.get('payload', {})
+        if payload:
+            st.write("**MIME 타입:**")
+            st.write(f"- 메인: {payload.get('mimeType', 'Unknown')}")
+            if payload.get('parts'):
+                for i, part in enumerate(payload['parts']):
+                    st.write(f"- 파트 {i+1}: {part.get('mimeType', 'Unknown')}")
+
 # =============================================================================
 # Function Calling 스키마 정의
 # =============================================================================
@@ -303,6 +548,9 @@ def handle_function_call(function_name, arguments):
             message_id = arguments.get("message_id")
             if message_id:
                 success = move_message_to_trash(message_id)
+                # 삭제 성공 시 메일 목록 새로고침
+                if success and st.session_state.gmail_authenticated:
+                    refresh_gmail_messages()
                 return {"success": success, "message": "메일이 휴지통으로 이동되었습니다." if success else "메일 이동에 실패했습니다."}
             else:
                 return {"success": False, "error": "message_id가 필요합니다."}
@@ -311,6 +559,9 @@ def handle_function_call(function_name, arguments):
             indices = arguments.get("indices", [])
             if indices:
                 results = delete_mails_by_indices(indices)
+                # 삭제 작업 후 메일 목록 새로고침
+                if st.session_state.gmail_authenticated:
+                    refresh_gmail_messages()
                 return {"results": results, "message": f"{len(indices)}개 메일 처리 완료"}
             else:
                 return {"success": False, "error": "indices가 필요합니다."}
@@ -374,7 +625,14 @@ def chat_with_function_call(user_input, client):
                 functions=FunctionSchema,
                 function_call="none"
             )
-            return final_response.choices[0].message.content
+            
+            response_content = final_response.choices[0].message.content
+            
+            # 삭제 관련 함수 실행 후 UI 새로고침 플래그 설정
+            if function_name in ["move_message_to_trash", "delete_mails_by_indices"]:
+                st.session_state.needs_refresh = True
+            
+            return response_content
         else:
             # 일반 답변
             return message.content
@@ -477,7 +735,7 @@ def refresh_gmail_messages():
     st.session_state.mail_page = 0
 
 def render_mail_management():
-    """메일 관리 섹션"""
+    """메일 관리 섹션 - Raw 형식 사용"""
     st.markdown("---")
     st.subheader("📧 메일 관리")
     
@@ -531,29 +789,116 @@ def render_mail_management():
             for i, msg in enumerate(current_messages):
                 global_idx = start_idx + i
                 with st.expander(f"[{global_idx + 1}] {msg['subject']}"):
-                    st.write(f"**발신자:** {msg['sender']}")
-                    st.write(f"**내용:** {msg['snippet']}")
+                    # Raw 형식으로 메일 전체 내용 가져오기
+                    full_content = get_mail_full_content(msg['id'])
                     
-                    # 선택 버튼
-                    if st.button("이 메일 선택", key=f"select_{msg['id']}"):
-                        st.session_state.selected_mail_index = global_idx
+                    if full_content['error']:
+                        st.error("메일을 불러올 수 없습니다.")
+                        continue
                     
-                    # 삭제 버튼
-                    if st.button(f"❌ 휴지통으로 이동", key=f"trash_{msg['id']}", type="secondary"):
-                        status_placeholder = st.empty()
-                        status_placeholder.info("🔄 메일을 휴지통으로 이동하는 중...")
-                        success = move_message_to_trash(msg['id'])
-                        if success:
-                            status_placeholder.success("✅ 메일이 휴지통으로 이동되었습니다!")
-                            refresh_gmail_messages()
-                            st.rerun()
-                        else:
-                            status_placeholder.error("❌ 메일 이동에 실패했습니다.")
-
-            # 선택된 메일 정보 표시
-            if st.session_state.selected_mail_index is not None:
-                sel = st.session_state.selected_mail_index
-                st.success(f"현재 선택된 메일: [{sel+1}] {messages[sel]['subject']}")
+                    # 메일 정보 표시
+                    col1, col2 = st.columns([1, 1])
+                    with col1:
+                        st.write(f"**📧 발신자:** {full_content['from']}")
+                        st.write(f"**📅 날짜:** {full_content['date']}")
+                    with col2:
+                        st.write(f"**📬 수신자:** {full_content['to']}")
+                        if full_content['attachments']:
+                            st.write(f"**📎 첨부파일:** {len(full_content['attachments'])}개")
+                    
+                    st.markdown("---")
+                    
+                    # 탭으로 구분하여 표시
+                    if full_content['body_html']:
+                        tab1, tab2, tab3 = st.tabs(["🌐 HTML 보기", "📄 텍스트 보기", "📎 첨부파일"])
+                    else:
+                        tab1, tab2 = st.tabs(["📄 텍스트 보기", "📎 첨부파일"])
+                    
+                    # HTML 탭
+                    if full_content['body_html']:
+                        with tab1:
+                            st.markdown("**HTML 렌더링:**")
+                            st.markdown(full_content['body_html'], unsafe_allow_html=True)
+                    
+                    # 텍스트 탭
+                    if full_content['body_html']:
+                        with tab2:
+                            st.markdown("**텍스트 본문:**")
+                            if full_content['body_text']:
+                                st.text_area("텍스트 본문", full_content['body_text'], height=300, key=f"text_{msg['id']}")
+                            else:
+                                st.info("텍스트 본문이 없습니다.")
+                    else:
+                        with tab1:
+                            st.markdown("**텍스트 본문:**")
+                            if full_content['body_text']:
+                                st.text_area("텍스트 본문", full_content['body_text'], height=300, key=f"text_{msg['id']}")
+                            else:
+                                st.info("텍스트 본문이 없습니다.")
+                    
+                    # 첨부파일 탭
+                    if full_content['body_html']:
+                        with tab3:
+                            if full_content['attachments']:
+                                st.markdown("**첨부파일 목록:**")
+                                for i, attachment in enumerate(full_content['attachments']):
+                                    with st.expander(f"📎 {attachment['filename']} ({attachment['size']} bytes)"):
+                                        st.write(f"**파일명:** {attachment['filename']}")
+                                        st.write(f"**크기:** {attachment['size']} bytes")
+                                        st.write(f"**타입:** {attachment['content_type']}")
+                                        
+                                        # 이미지인 경우 표시
+                                        if attachment['content_type'].startswith('image/'):
+                                            st.image(attachment['data'], caption=attachment['filename'])
+                                        else:
+                                            # 다운로드 버튼 (실제로는 파일 저장 필요)
+                                            st.download_button(
+                                                label=f"📥 {attachment['filename']} 다운로드",
+                                                data=attachment['data'],
+                                                file_name=attachment['filename'],
+                                                mime=attachment['content_type']
+                                            )
+                            else:
+                                st.info("첨부파일이 없습니다.")
+                    else:
+                        with tab2:
+                            if full_content['attachments']:
+                                st.markdown("**첨부파일 목록:**")
+                                for i, attachment in enumerate(full_content['attachments']):
+                                    with st.expander(f"📎 {attachment['filename']} ({attachment['size']} bytes)"):
+                                        st.write(f"**파일명:** {attachment['filename']}")
+                                        st.write(f"**크기:** {attachment['size']} bytes")
+                                        st.write(f"**타입:** {attachment['content_type']}")
+                                        
+                                        # 이미지인 경우 표시
+                                        if attachment['content_type'].startswith('image/'):
+                                            st.image(attachment['data'], caption=attachment['filename'])
+                                        else:
+                                            # 다운로드 버튼
+                                            st.download_button(
+                                                label=f"📥 {attachment['filename']} 다운로드",
+                                                data=attachment['data'],
+                                                file_name=attachment['filename'],
+                                                mime=attachment['content_type']
+                                            )
+                            else:
+                                st.info("첨부파일이 없습니다.")
+                    
+                    st.markdown("---")
+                    
+                    # 메일 번호 표시 (사용자가 챗봇에서 참조할 수 있도록)
+                    st.info(f"💡 이 메일을 챗봇에서 참조하려면 '{global_idx + 1}번 메일'이라고 말하세요!")
+                    
+                    # 버튼들
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("🔍 원본 보기", key=f"original_{msg['id']}"):
+                            show_mail_original_format(msg['id'], global_idx + 1)
+                    with col2:
+                        if st.button("📋 전체 내용 복사", key=f"copy_{msg['id']}"):
+                            content_to_copy = full_content['body_text'] if full_content['body_text'] else full_content['body_html']
+                            st.success("✅ 전체 내용이 준비되었습니다! (수동으로 복사해주세요)")
+                            st.code(content_to_copy, language='text')
         else:
             st.info("📭 메일이 없습니다.")
     else:
@@ -614,11 +959,11 @@ def handle_chat_input():
                 message_placeholder.markdown(assistant_response)
                 st.session_state.messages.append({"role": "assistant", "content": assistant_response})
                 
-                # 메일 관련 작업 후 메일 목록 새로고침
-                if any(keyword in prompt.lower() for keyword in ["삭제", "휴지통", "요약", "메일"]):
-                    if st.session_state.gmail_authenticated:
-                        refresh_gmail_messages()
-                        st.rerun()
+                # 삭제 관련 작업 후 UI 새로고침
+                if st.session_state.get("needs_refresh", False):
+                    st.session_state.needs_refresh = False
+                    time.sleep(0.5)  # 잠시 대기 후 새로고침
+                    st.rerun()
                         
             except Exception as e:
                 error_msg = f"❌ 응답 생성 중 오류: {str(e)}"
