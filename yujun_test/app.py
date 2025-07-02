@@ -1,5 +1,6 @@
 """
 DeepMail - OpenAI 챗봇 with Gmail 연동
+Function Calling 기반 AI Agent 구현
 """
 
 import streamlit as st
@@ -51,11 +52,12 @@ def initialize_session_state():
         st.session_state.gmail_messages = None
     if "gmail_last_fetch" not in st.session_state:
         st.session_state.gmail_last_fetch = None
-    # 페이지네이션 상태 추가
     if "mail_page" not in st.session_state:
         st.session_state.mail_page = 0
     if "mail_page_size" not in st.session_state:
         st.session_state.mail_page_size = 5
+    if "selected_mail_index" not in st.session_state:
+        st.session_state.selected_mail_index = None
 
 initialize_session_state()
 
@@ -131,11 +133,8 @@ def move_message_to_trash(message_id):
     
     try:
         service = build('gmail', 'v1', credentials=st.session_state.gmail_credentials)
-        
-        # 메일을 휴지통으로 이동
         result = service.users().messages().trash(userId='me', id=message_id).execute()
         
-        # 결과 확인
         if result and 'id' in result:
             return True
         else:
@@ -152,6 +151,124 @@ def move_message_to_trash(message_id):
             st.error(f"❌ 메일 이동 실패: {error_msg}")
         return False
 
+def delete_mails_by_indices(indices):
+    """번호(인덱스) 리스트로 여러 메일을 휴지통으로 이동"""
+    results = []
+    messages = st.session_state.gmail_messages
+    for idx in indices:
+        if 0 <= idx < len(messages):
+            msg_id = messages[idx]['id']
+            result = move_message_to_trash(msg_id)
+            results.append({"index": idx, "success": result})
+        else:
+            results.append({"index": idx, "success": False, "error": "존재하지 않는 번호"})
+    return results
+
+def summarize_mails_by_indices(indices, model="gpt-3.5-turbo", temperature=0.5):
+    """번호(인덱스) 리스트로 여러 메일을 OpenAI GPT로 요약"""
+    messages = st.session_state.gmail_messages
+    summaries = []
+    client = initialize_openai_client()
+
+    for idx in indices:
+        if 0 <= idx < len(messages):
+            msg = messages[idx]
+            prompt = f"다음 이메일을 3줄 이내로 요약해줘.\n\n제목: {msg['subject']}\n내용: {msg['snippet']}"
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=temperature,
+                    max_tokens=300
+                )
+                summary = response.choices[0].message.content.strip()
+            except Exception as e:
+                summary = f"[{idx+1}] 요약 실패: {str(e)}"
+            summaries.append(f"[{idx+1}] {msg['subject']}\n{summary}")
+        else:
+            summaries.append(f"[{idx+1}] 존재하지 않는 메일입니다.")
+    return "\n\n".join(summaries)
+
+def get_mail_content(index):
+    """번호(인덱스)로 메일의 제목/내용을 반환"""
+    messages = st.session_state.gmail_messages
+    if 0 <= index < len(messages):
+        msg = messages[index]
+        return {
+            "subject": msg["subject"],
+            "sender": msg["sender"],
+            "snippet": msg["snippet"]
+        }
+    else:
+        return {
+            "error": f"{index+1}번 메일이 존재하지 않습니다."
+        }
+
+# =============================================================================
+# Function Calling 스키마 정의
+# =============================================================================
+
+FunctionSchema = [
+    {
+        "name": "move_message_to_trash",
+        "description": "지정한 Gmail 메시지를 휴지통으로 이동합니다.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message_id": {
+                    "type": "string",
+                    "description": "휴지통으로 이동할 Gmail 메시지의 고유 ID"
+                }
+            },
+            "required": ["message_id"]
+        },
+    },
+    {
+        "name": "delete_mails_by_indices",
+        "description": "선택한 번호(인덱스)의 Gmail 메일들을 휴지통으로 이동합니다.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "indices": {
+                    "type": "array",
+                    "items": { "type": "integer" },
+                    "description": "삭제할 메일의 번호(0부터 시작, 예: [0, 2, 4])"
+                }
+            },
+            "required": ["indices"]
+        },
+    },
+    {
+        "name": "summarize_mails_by_indices",
+        "description": "선택한 번호(인덱스)의 Gmail 메일들을 OpenAI GPT로 요약합니다.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "indices": {
+                    "type": "array",
+                    "items": { "type": "integer" },
+                    "description": "요약할 메일의 번호(0부터 시작, 예: [0, 2, 4])"
+                }
+            },
+            "required": ["indices"]
+        }
+    },
+    {
+        "name": "get_mail_content",
+        "description": "번호(인덱스)로 Gmail 메일의 제목, 발신자, 내용을 반환합니다.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "index": {
+                    "type": "integer",
+                    "description": "메일 번호(0부터 시작, 예: 0은 1번 메일)"
+                }
+            },
+            "required": ["index"]
+        }
+    }
+]
+
 # =============================================================================
 # OpenAI 관련 함수들
 # =============================================================================
@@ -162,19 +279,6 @@ def initialize_openai_client():
     if api_key:
         return OpenAI(api_key=api_key)
     return None
-
-def generate_chat_response(messages, model, temperature):
-    """OpenAI 챗봇 응답 생성"""
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": m["role"], "content": m["content"]} for m in messages],
-            temperature=temperature,
-            max_tokens=1000
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        return handle_openai_error(e)
 
 def handle_openai_error(error):
     """OpenAI API 오류 처리"""
@@ -187,6 +291,96 @@ def handle_openai_error(error):
         return "❌ API 할당량이 소진되었습니다. OpenAI 계정을 확인해주세요."
     else:
         return f"❌ 오류가 발생했습니다: {error_message}"
+
+# =============================================================================
+# Function Calling 핸들러
+# =============================================================================
+
+def handle_function_call(function_name, arguments):
+    """Function calling 결과를 실제 함수로 실행"""
+    try:
+        if function_name == "move_message_to_trash":
+            message_id = arguments.get("message_id")
+            if message_id:
+                success = move_message_to_trash(message_id)
+                return {"success": success, "message": "메일이 휴지통으로 이동되었습니다." if success else "메일 이동에 실패했습니다."}
+            else:
+                return {"success": False, "error": "message_id가 필요합니다."}
+        
+        elif function_name == "delete_mails_by_indices":
+            indices = arguments.get("indices", [])
+            if indices:
+                results = delete_mails_by_indices(indices)
+                return {"results": results, "message": f"{len(indices)}개 메일 처리 완료"}
+            else:
+                return {"success": False, "error": "indices가 필요합니다."}
+        
+        elif function_name == "summarize_mails_by_indices":
+            indices = arguments.get("indices", [])
+            if indices:
+                summary = summarize_mails_by_indices(indices)
+                return {"summary": summary, "message": f"{len(indices)}개 메일 요약 완료"}
+            else:
+                return {"success": False, "error": "indices가 필요합니다."}
+        
+        elif function_name == "get_mail_content":
+            index = arguments.get("index")
+            if index is not None:
+                content = get_mail_content(index)
+                return content
+            else:
+                return {"error": "index가 필요합니다."}
+        
+        else:
+            return {"error": f"알 수 없는 함수: {function_name}"}
+    
+    except Exception as e:
+        return {"error": f"함수 실행 중 오류: {str(e)}"}
+
+def chat_with_function_call(user_input, client):
+    """Function calling을 활용한 챗봇 대화"""
+    try:
+        # 1. 사용자 메시지 준비
+        messages = [{"role": "user", "content": user_input}]
+        
+        # 2. 함수 스키마와 함께 OpenAI API 호출
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=messages,
+            functions=FunctionSchema,
+            function_call="auto"
+        )
+        message = response.choices[0].message
+
+        # 3. function_call이 있으면 실제 함수 실행
+        if hasattr(message, "function_call") and message.function_call:
+            function_name = message.function_call.name
+            arguments = json.loads(message.function_call.arguments)
+            
+            # 실제 함수 실행
+            function_result = handle_function_call(function_name, arguments)
+
+            # 4. 함수 실행 결과를 function 역할로 추가
+            messages.append({
+                "role": "function",
+                "name": function_name,
+                "content": json.dumps(function_result, ensure_ascii=False)
+            })
+
+            # 5. 최종 자연어 응답 생성
+            final_response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=messages,
+                functions=FunctionSchema,
+                function_call="none"
+            )
+            return final_response.choices[0].message.content
+        else:
+            # 일반 답변
+            return message.content
+    
+    except Exception as e:
+        return f"❌ 오류가 발생했습니다: {str(e)}"
 
 # =============================================================================
 # UI 컴포넌트들
@@ -216,7 +410,7 @@ def render_sidebar():
             )
             if page_size != st.session_state.mail_page_size:
                 st.session_state.mail_page_size = page_size
-                st.session_state.mail_page = 0  # 페이지 초기화
+                st.session_state.mail_page = 0
                 st.rerun()
             st.markdown("---")
         
@@ -225,7 +419,7 @@ def render_sidebar():
         st.session_state["sidebar_model"] = model
         st.session_state["sidebar_temperature"] = temperature
 
-        # === 채팅 기록 초기화 버튼 추가 ===
+        # 채팅 기록 초기화
         st.markdown("---")
         if st.button("💬 채팅 기록 초기화"):
             st.session_state.messages = []
@@ -276,10 +470,11 @@ def handle_gmail_logout():
     st.rerun()
 
 def refresh_gmail_messages():
-    messages = get_gmail_messages(50)  # 50개 메일 가져오기
+    """Gmail 메시지 새로고침"""
+    messages = get_gmail_messages(50)
     st.session_state.gmail_messages = messages
     st.session_state.gmail_last_fetch = datetime.now()
-    st.session_state.mail_page = 0  # 페이지 초기화
+    st.session_state.mail_page = 0
 
 def render_mail_management():
     """메일 관리 섹션"""
@@ -290,11 +485,6 @@ def render_mail_management():
         # 최초 로그인 시 또는 세션에 메일이 없으면 자동으로 불러오기
         if st.session_state.gmail_messages is None:
             refresh_gmail_messages()
-        
-        # 새로고침 버튼
-        if st.button("🔄 새로고침"):
-            refresh_gmail_messages()
-            st.rerun()
         
         # 마지막 불러온 시간 표시
         if st.session_state.gmail_last_fetch:
@@ -308,8 +498,13 @@ def render_mail_management():
             # 페이지 정보 표시
             st.info(f"총 {total_messages}개 메일 (페이지 {st.session_state.mail_page + 1}/{total_pages})")
             
-            # 7개의 컬럼을 만들어 가운데 4개에만 버튼 배치
+            # 페이지네이션 버튼
             cols = st.columns([2, 2, 1, 1, 1, 1, 2, 2])
+
+            with cols[0]:
+                if st.button("🔄 새로고침"):
+                    refresh_gmail_messages()
+                    st.rerun()
 
             with cols[2]:
                 if st.button("⏮️", key="first", disabled=st.session_state.mail_page == 0):
@@ -335,23 +530,30 @@ def render_mail_management():
             
             for i, msg in enumerate(current_messages):
                 global_idx = start_idx + i
-                with st.expander(f"📧 {msg['subject']} ({global_idx + 1}/{total_messages})"):
+                with st.expander(f"[{global_idx + 1}] {msg['subject']}"):
                     st.write(f"**발신자:** {msg['sender']}")
                     st.write(f"**내용:** {msg['snippet']}")
+                    
+                    # 선택 버튼
+                    if st.button("이 메일 선택", key=f"select_{msg['id']}"):
+                        st.session_state.selected_mail_index = global_idx
+                    
+                    # 삭제 버튼
                     if st.button(f"❌ 휴지통으로 이동", key=f"trash_{msg['id']}", type="secondary"):
                         status_placeholder = st.empty()
                         status_placeholder.info("🔄 메일을 휴지통으로 이동하는 중...")
-                        
-                        # 실제 삭제 함수 호출
                         success = move_message_to_trash(msg['id'])
-                        
                         if success:
                             status_placeholder.success("✅ 메일이 휴지통으로 이동되었습니다!")
-                            # 삭제 후 목록 새로고침
                             refresh_gmail_messages()
                             st.rerun()
                         else:
                             status_placeholder.error("❌ 메일 이동에 실패했습니다.")
+
+            # 선택된 메일 정보 표시
+            if st.session_state.selected_mail_index is not None:
+                sel = st.session_state.selected_mail_index
+                st.success(f"현재 선택된 메일: [{sel+1}] {messages[sel]['subject']}")
         else:
             st.info("📭 메일이 없습니다.")
     else:
@@ -405,16 +607,23 @@ def handle_chat_input():
             message_placeholder = st.empty()
             message_placeholder.markdown("🤔 생각 중...")
             
-            # 모델과 temperature는 사이드바에서만 가져오도록!
-            model = st.session_state.get("sidebar_model", "gpt-3.5-turbo")
-            temperature = st.session_state.get("sidebar_temperature", 0.7)
-            
-            assistant_response = generate_chat_response(
-                st.session_state.messages, model, temperature
-            )
-            
-            message_placeholder.markdown(assistant_response)
-            st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+            try:
+                # Function calling을 활용한 응답 생성
+                assistant_response = chat_with_function_call(prompt, client)
+                
+                message_placeholder.markdown(assistant_response)
+                st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+                
+                # 메일 관련 작업 후 메일 목록 새로고침
+                if any(keyword in prompt.lower() for keyword in ["삭제", "휴지통", "요약", "메일"]):
+                    if st.session_state.gmail_authenticated:
+                        refresh_gmail_messages()
+                        st.rerun()
+                        
+            except Exception as e:
+                error_msg = f"❌ 응답 생성 중 오류: {str(e)}"
+                message_placeholder.markdown(error_msg)
+                st.session_state.messages.append({"role": "assistant", "content": error_msg})
 
 # =============================================================================
 # 메인 애플리케이션
@@ -427,7 +636,7 @@ def main():
     
     # 헤더
     st.title("DeepMail - AI 챗봇 & Gmail 관리")
-    st.markdown("OpenAI와 Gmail이 연동된 AI 챗봇입니다!")
+    st.markdown("OpenAI Function Calling 기반 AI Agent로 Gmail을 관리하세요!")
     
     # 사이드바 렌더링
     render_sidebar()
