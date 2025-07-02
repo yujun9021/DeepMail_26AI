@@ -22,6 +22,7 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 import quopri
+import plotly.graph_objects as go
 
 # =============================================================================
 # 설정 및 초기화
@@ -386,68 +387,41 @@ def show_mail_original_format(message_id, mail_index):
         return
     
     # 탭으로 구분하여 표시
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["📋 전체 구조", "📧 헤더 정보", "📄 본문 내용", "📎 첨부파일", "🔍 상세 분석"])
+    tab1, tab2, tab3 = st.tabs(["🌐 HTML 보기", "📄 텍스트 보기", "📎 첨부파일"])
     
     with tab1:
-        st.write("**전체 메일 구조 (JSON):**")
-        st.json(full_content)
+        st.markdown("**HTML 렌더링:**")
+        st.markdown(full_content['body_html'], unsafe_allow_html=True)
     
     with tab2:
-        st.write("**헤더 정보:**")
-        headers = full_content.get('headers', {})
-        if headers:
-            for key, value in headers.items():
-                st.write(f"**{key}:** {value}")
+        st.markdown("**텍스트 본문:**")
+        if full_content['body_text']:
+            st.text_area("텍스트 본문", full_content['body_text'], height=300, key=f"text_{message_id}")
         else:
-            st.info("헤더 정보가 없습니다.")
+            st.info("텍스트 본문이 없습니다.")
     
     with tab3:
-        st.write("**본문 내용:**")
-        body_text = full_content.get('body_text', '')
-        if body_text:
-            st.text_area("메일 본문", body_text, height=300)
-        else:
-            st.info("본문 내용이 없습니다.")
-    
-    with tab4:
-        st.write("**첨부파일 및 멀티파트 정보:**")
-        parts = full_content.get('parts', [])
-        if parts:
-            for i, part in enumerate(parts):
-                with st.expander(f"파트 {i+1}: {part.get('mimeType', 'Unknown')}"):
-                    st.json(part)
-                    if 'body_text' in part:
-                        st.text_area(f"파트 {i+1} 내용", part['body_text'], height=150)
+        if full_content['attachments']:
+            st.markdown("**첨부파일 목록:**")
+            for i, attachment in enumerate(full_content['attachments']):
+                with st.expander(f"📎 {attachment['filename']} ({attachment['size']} bytes)"):
+                    st.write(f"**파일명:** {attachment['filename']}")
+                    st.write(f"**크기:** {attachment['size']} bytes")
+                    st.write(f"**타입:** {attachment['content_type']}")
+                    
+                    # 이미지인 경우 표시
+                    if attachment['content_type'].startswith('image/'):
+                        st.image(attachment['data'], caption=attachment['filename'])
+                    else:
+                        # 다운로드 버튼
+                        st.download_button(
+                            label=f"📥 {attachment['filename']} 다운로드",
+                            data=attachment['data'],
+                            file_name=attachment['filename'],
+                            mime=attachment['content_type']
+                        )
         else:
             st.info("첨부파일이 없습니다.")
-    
-    with tab5:
-        st.write("**상세 분석:**")
-        
-        # 기본 정보
-        col1, col2 = st.columns(2)
-        with col1:
-            st.metric("메일 크기", f"{full_content.get('sizeEstimate', 0)} bytes")
-            st.metric("라벨 수", len(full_content.get('labelIds', [])))
-        
-        with col2:
-            st.metric("파트 수", len(full_content.get('parts', [])))
-            st.metric("헤더 수", len(full_content.get('headers', {})))
-        
-        # 라벨 정보
-        if full_content.get('labelIds'):
-            st.write("**라벨:**")
-            for label in full_content['labelIds']:
-                st.write(f"- {label}")
-        
-        # MIME 타입 분석
-        payload = full_content.get('payload', {})
-        if payload:
-            st.write("**MIME 타입:**")
-            st.write(f"- 메인: {payload.get('mimeType', 'Unknown')}")
-            if payload.get('parts'):
-                for i, part in enumerate(payload['parts']):
-                    st.write(f"- 파트 {i+1}: {part.get('mimeType', 'Unknown')}")
 
 # =============================================================================
 # Function Calling 스키마 정의
@@ -851,7 +825,7 @@ def render_mail_management():
                                         if attachment['content_type'].startswith('image/'):
                                             st.image(attachment['data'], caption=attachment['filename'])
                                         else:
-                                            # 다운로드 버튼 (실제로는 파일 저장 필요)
+                                            # 다운로드 버튼
                                             st.download_button(
                                                 label=f"📥 {attachment['filename']} 다운로드",
                                                 data=attachment['data'],
@@ -888,17 +862,6 @@ def render_mail_management():
                     
                     # 메일 번호 표시 (사용자가 챗봇에서 참조할 수 있도록)
                     st.info(f"💡 이 메일을 챗봇에서 참조하려면 '{global_idx + 1}번 메일'이라고 말하세요!")
-                    
-                    # 버튼들
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("🔍 원본 보기", key=f"original_{msg['id']}"):
-                            show_mail_original_format(msg['id'], global_idx + 1)
-                    with col2:
-                        if st.button("📋 전체 내용 복사", key=f"copy_{msg['id']}"):
-                            content_to_copy = full_content['body_text'] if full_content['body_text'] else full_content['body_html']
-                            st.success("✅ 전체 내용이 준비되었습니다! (수동으로 복사해주세요)")
-                            st.code(content_to_copy, language='text')
         else:
             st.info("📭 메일이 없습니다.")
     else:
@@ -970,6 +933,23 @@ def handle_chat_input():
                 message_placeholder.markdown(error_msg)
                 st.session_state.messages.append({"role": "assistant", "content": error_msg})
 
+def draw_gauge_chart(risk_score):
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=risk_score,
+        title={'text': "평균 피싱 위험도 (%)"},
+        gauge={
+            'axis': {'range': [0, 100]},
+            'bar': {'color': "darkred"},
+            'steps': [
+                {'range': [0, 30], 'color': 'lightgreen'},
+                {'range': [30, 70], 'color': 'yellow'},
+                {'range': [70, 100], 'color': 'red'}
+            ]
+        }
+    ))
+    st.plotly_chart(fig, use_container_width=True)
+
 # =============================================================================
 # 메인 애플리케이션
 # =============================================================================
@@ -991,8 +971,11 @@ def main():
     
     # 왼쪽 컬럼: 메일 관리
     with col1:
+        avg_risk = 55.5
+        draw_gauge_chart(avg_risk)
         render_mail_management()
-    
+
+        
     # 오른쪽 컬럼: 챗봇
     with col2:
         render_chat_interface()
