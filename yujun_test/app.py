@@ -23,6 +23,8 @@ from email.mime.base import MIMEBase
 from email import encoders
 import quopri
 import plotly.graph_objects as go
+import re
+from bs4 import BeautifulSoup
 
 # =============================================================================
 # 설정 및 초기화
@@ -107,7 +109,7 @@ def authenticate_gmail():
     
     return creds
 
-def get_gmail_messages(max_results=50):
+def get_gmail_messages(max_results=30):
     """Gmail 메시지 목록 조회"""
     try:
         service = build('gmail', 'v1', credentials=st.session_state.gmail_credentials)
@@ -116,6 +118,7 @@ def get_gmail_messages(max_results=50):
         
         message_details = []
         for message in messages:
+            # 기본 정보만 가져오기 (전체 내용은 나중에 필요할 때)
             msg = service.users().messages().get(userId='me', id=message['id']).execute()
             headers = msg['payload']['headers']
             subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '제목 없음')
@@ -703,20 +706,66 @@ def handle_gmail_logout():
 
 def refresh_gmail_messages():
     """Gmail 메시지 새로고침"""
-    messages = get_gmail_messages(50)
+    messages = get_gmail_messages(30)
     st.session_state.gmail_messages = messages
     st.session_state.gmail_last_fetch = datetime.now()
     st.session_state.mail_page = 0
 
+def clean_html_content(html_content):
+    """HTML 콘텐츠를 정리하고 안전하게 렌더링"""
+    try:
+        # BeautifulSoup으로 HTML 파싱
+        soup = BeautifulSoup(html_content, 'html.parser')
+        
+        # 스크립트 태그 제거
+        for script in soup(["script", "style"]):
+            script.decompose()
+        
+        # 위험한 태그들 제거 또는 변환
+        dangerous_tags = ['iframe', 'object', 'embed', 'form', 'input', 'button']
+        for tag in dangerous_tags:
+            for element in soup.find_all(tag):
+                element.decompose()
+        
+        # 외부 링크를 안전하게 처리
+        for link in soup.find_all('a'):
+            if link.get('href'):
+                link['target'] = '_blank'
+                link['rel'] = 'noopener noreferrer'
+        
+        # 이미지 태그 정리
+        for img in soup.find_all('img'):
+            if not img.get('src'):
+                img.decompose()
+        
+        return str(soup)
+        
+    except Exception as e:
+        # HTML 파싱 실패 시 텍스트만 추출
+        return extract_text_from_html(html_content)
+
+def extract_text_from_html(html_content):
+    """HTML에서 텍스트만 추출"""
+    try:
+        soup = BeautifulSoup(html_content, 'html.parser')
+        return soup.get_text(separator='\n', strip=True)
+    except:
+        # HTML 태그 제거
+        clean_text = re.sub(r'<[^>]+>', '', html_content)
+        # HTML 엔티티 디코딩
+        clean_text = clean_text.replace('&nbsp;', ' ').replace('&amp;', '&').replace('&lt;', '<').replace('&gt;', '>')
+        return clean_text
+
 def render_mail_management():
-    """메일 관리 섹션 - Raw 형식 사용"""
+    """메일 관리 섹션 - 크기 제한 추가"""
     st.markdown("---")
     st.subheader("📧 메일 관리")
     
     if st.session_state.gmail_authenticated:
         # 최초 로그인 시 또는 세션에 메일이 없으면 자동으로 불러오기
         if st.session_state.gmail_messages is None:
-            refresh_gmail_messages()
+            with st.spinner("메일 목록을 불러오는 중..."):
+                refresh_gmail_messages()
         
         # 마지막 불러온 시간 표시
         if st.session_state.gmail_last_fetch:
@@ -735,8 +784,9 @@ def render_mail_management():
 
             with cols[0]:
                 if st.button("🔄 새로고침"):
-                    refresh_gmail_messages()
-                    st.rerun()
+                    with st.spinner("메일 목록을 새로고침하는 중..."):
+                        refresh_gmail_messages()
+                        st.rerun()
 
             with cols[2]:
                 if st.button("⏮️", key="first", disabled=st.session_state.mail_page == 0):
@@ -763,8 +813,9 @@ def render_mail_management():
             for i, msg in enumerate(current_messages):
                 global_idx = start_idx + i
                 with st.expander(f"[{global_idx + 1}] {msg['subject']}"):
-                    # Raw 형식으로 메일 전체 내용 가져오기
-                    full_content = get_mail_full_content(msg['id'])
+                    # 메일 전체 내용을 바로 가져오기
+                    with st.spinner("메일 내용을 불러오는 중..."):
+                        full_content = get_mail_full_content(msg['id'])
                     
                     if full_content['error']:
                         st.error("메일을 불러올 수 없습니다.")
@@ -792,7 +843,35 @@ def render_mail_management():
                     if full_content['body_html']:
                         with tab1:
                             st.markdown("**HTML 렌더링:**")
-                            st.markdown(full_content['body_html'], unsafe_allow_html=True)
+                            try:
+                                # HTML 정리
+                                cleaned_html = clean_html_content(full_content['body_html'])
+                                
+                                # 스크롤 가능한 컨테이너로 감싸기
+                                with st.container():
+                                    st.markdown("""
+                                    <style>
+                                    .email-scroll-container {
+                                        max-height: 800px;
+                                        overflow-y: auto;
+                                        border: 1px solid #ddd;
+                                        padding: 10px;
+                                        border-radius: 5px;
+                                    }
+                                    </style>
+                                    """, unsafe_allow_html=True)
+                                    
+                                    st.markdown(f"""
+                                    <div class="email-scroll-container">
+                                    {cleaned_html}
+                                    </div>
+                                    """, unsafe_allow_html=True)
+                                    
+                            except Exception as e:
+                                st.error(f"HTML 렌더링 실패: {str(e)}")
+                                st.info("텍스트 버전으로 표시합니다.")
+                                text_content = extract_text_from_html(full_content['body_html'])
+                                st.text_area("정리된 텍스트", text_content, height=300)
                     
                     # 텍스트 탭
                     if full_content['body_html']:
@@ -801,7 +880,9 @@ def render_mail_management():
                             if full_content['body_text']:
                                 st.text_area("텍스트 본문", full_content['body_text'], height=300, key=f"text_{msg['id']}")
                             else:
-                                st.info("텍스트 본문이 없습니다.")
+                                # HTML에서 텍스트 추출
+                                text_content = extract_text_from_html(full_content['body_html'])
+                                st.text_area("HTML에서 추출한 텍스트", text_content, height=300, key=f"extracted_{msg['id']}")
                     else:
                         with tab1:
                             st.markdown("**텍스트 본문:**")
