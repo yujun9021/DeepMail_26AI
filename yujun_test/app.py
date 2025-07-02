@@ -126,8 +126,11 @@ def move_message_to_trash(message_id):
     
     try:
         service = build('gmail', 'v1', credentials=st.session_state.gmail_credentials)
+        
+        # 메일을 휴지통으로 이동
         result = service.users().messages().trash(userId='me', id=message_id).execute()
         
+        # 결과 확인
         if result and 'id' in result:
             return True
         else:
@@ -136,7 +139,12 @@ def move_message_to_trash(message_id):
             
     except Exception as e:
         error_msg = str(e)
-        st.error(f"❌ 메일 이동 실패: {error_msg}")
+        if "404" in error_msg:
+            st.error("❌ 메일을 찾을 수 없습니다. 이미 삭제되었을 수 있습니다.")
+        elif "403" in error_msg:
+            st.error("❌ 메일 삭제 권한이 없습니다.")
+        else:
+            st.error(f"❌ 메일 이동 실패: {error_msg}")
         return False
 
 # =============================================================================
@@ -281,13 +289,17 @@ def render_mail_management():
                     if st.button(f"❌ 휴지통으로 이동", key=f"trash_{msg['id']}", type="secondary"):
                         status_placeholder = st.empty()
                         status_placeholder.info("🔄 메일을 휴지통으로 이동하는 중...")
-                        import time
-                        time.sleep(3)
-                        status_placeholder.success("✅ 메일이 휴지통으로 이동되었습니다!")
-                        time.sleep(1)
-                        # 삭제 후 목록 새로고침
-                        refresh_gmail_messages()
-                        st.rerun()
+                        
+                        # 실제 삭제 함수 호출
+                        success = move_message_to_trash(msg['id'])
+                        
+                        if success:
+                            status_placeholder.success("✅ 메일이 휴지통으로 이동되었습니다!")
+                            # 삭제 후 목록 새로고침
+                            refresh_gmail_messages()
+                            st.rerun()
+                        else:
+                            status_placeholder.error("❌ 메일 이동에 실패했습니다.")
         else:
             st.info("📭 메일이 없습니다.")
     else:
