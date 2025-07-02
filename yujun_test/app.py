@@ -51,6 +51,11 @@ def initialize_session_state():
         st.session_state.gmail_messages = None
     if "gmail_last_fetch" not in st.session_state:
         st.session_state.gmail_last_fetch = None
+    # 페이지네이션 상태 추가
+    if "mail_page" not in st.session_state:
+        st.session_state.mail_page = 0
+    if "mail_page_size" not in st.session_state:
+        st.session_state.mail_page_size = 5
 
 initialize_session_state()
 
@@ -92,7 +97,7 @@ def authenticate_gmail():
     
     return creds
 
-def get_gmail_messages(max_results=10):
+def get_gmail_messages(max_results=50):
     """Gmail 메시지 목록 조회"""
     try:
         service = build('gmail', 'v1', credentials=st.session_state.gmail_credentials)
@@ -200,6 +205,21 @@ def render_sidebar():
         render_gmail_connection()
         st.markdown("---")
         
+        # 메일 페이지 크기 설정
+        if st.session_state.gmail_authenticated:
+            st.subheader("📧 메일 설정")
+            page_size = st.selectbox(
+                "페이지당 메일 개수",
+                [5, 10, 15, 20],
+                index=0,
+                help="한 페이지에 표시할 메일 개수를 선택하세요"
+            )
+            if page_size != st.session_state.mail_page_size:
+                st.session_state.mail_page_size = page_size
+                st.session_state.mail_page = 0  # 페이지 초기화
+                st.rerun()
+            st.markdown("---")
+        
         # 챗봇 설정
         model, temperature = render_chatbot_settings()
         st.session_state["sidebar_model"] = model
@@ -256,9 +276,10 @@ def handle_gmail_logout():
     st.rerun()
 
 def refresh_gmail_messages():
-    messages = get_gmail_messages(5)
+    messages = get_gmail_messages(50)  # 50개 메일 가져오기
     st.session_state.gmail_messages = messages
     st.session_state.gmail_last_fetch = datetime.now()
+    st.session_state.mail_page = 0  # 페이지 초기화
 
 def render_mail_management():
     """메일 관리 섹션"""
@@ -281,9 +302,40 @@ def render_mail_management():
         
         messages = st.session_state.gmail_messages
         if messages:
-            st.info(f"📧 최근 {len(messages)}개 메일")
-            for i, msg in enumerate(messages):
-                with st.expander(f"📧 {msg['subject']} ({i+1}/{len(messages)})"):
+            total_messages = len(messages)
+            total_pages = (total_messages + st.session_state.mail_page_size - 1) // st.session_state.mail_page_size
+            
+            # 페이지 정보 표시
+            st.info(f"총 {total_messages}개 메일 (페이지 {st.session_state.mail_page + 1}/{total_pages})")
+            
+            # 7개의 컬럼을 만들어 가운데 4개에만 버튼 배치
+            cols = st.columns([2, 2, 1, 1, 1, 1, 2, 2])
+
+            with cols[2]:
+                if st.button("⏮️", key="first", disabled=st.session_state.mail_page == 0):
+                    st.session_state.mail_page = 0
+                    st.rerun()
+            with cols[3]:
+                if st.button("◀️", key="prev", disabled=st.session_state.mail_page == 0):
+                    st.session_state.mail_page = max(0, st.session_state.mail_page - 1)
+                    st.rerun()
+            with cols[4]:
+                if st.button("▶️", key="next", disabled=st.session_state.mail_page >= total_pages - 1):
+                    st.session_state.mail_page = min(total_pages - 1, st.session_state.mail_page + 1)
+                    st.rerun()
+            with cols[5]:
+                if st.button("⏭️", key="last", disabled=st.session_state.mail_page >= total_pages - 1):
+                    st.session_state.mail_page = total_pages - 1
+                    st.rerun()
+            
+            # 현재 페이지의 메일들 표시
+            start_idx = st.session_state.mail_page * st.session_state.mail_page_size
+            end_idx = min(start_idx + st.session_state.mail_page_size, total_messages)
+            current_messages = messages[start_idx:end_idx]
+            
+            for i, msg in enumerate(current_messages):
+                global_idx = start_idx + i
+                with st.expander(f"📧 {msg['subject']} ({global_idx + 1}/{total_messages})"):
                     st.write(f"**발신자:** {msg['sender']}")
                     st.write(f"**내용:** {msg['snippet']}")
                     if st.button(f"❌ 휴지통으로 이동", key=f"trash_{msg['id']}", type="secondary"):
