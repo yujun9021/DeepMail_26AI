@@ -300,8 +300,7 @@ class UIComponents:
     @staticmethod
     def render_phishing_dashboard():
         """피싱/스팸 메일 대시보드"""
-        st.header("🛡️ 피싱/스팸 메일 대시보드")
-        
+
         # 4개 컬럼으로 성능 지표 표시
       
         # 게이지 차트와 추가 통계를 2개 컬럼으로 배치
@@ -415,7 +414,7 @@ class UIComponents:
                 total_pages = (total_messages + st.session_state.mail_page_size - 1) // st.session_state.mail_page_size
                 
                 # 페이지네이션 버튼
-                cols = st.columns([2, 2, 1, 1, 1, 1, 1, 3])
+                cols = st.columns([2, 1, 1, 1, 1, 1, 1, 2])
 
                 with cols[0]:
                     if st.button("🔄 새로고침"):
@@ -440,7 +439,7 @@ class UIComponents:
                         st.session_state.mail_page = total_pages - 1
                         st.rerun()
                 with cols[7]:
-                    st.info(f"총 {total_messages}개 메일 (페이지 {st.session_state.mail_page + 1}/{total_pages})")
+                    st.info(f"페이지 {st.session_state.mail_page + 1}/{total_pages}")
                 
                 
                 # 현재 페이지의 메일들 표시
