@@ -1,0 +1,17 @@
+streamlit
+openai
+python-dotenv
+google-api-python-client
+google-auth
+google-auth-httplib2
+google-auth-oauthlib
+requests
+
+# 머신러닝 및 시각화용 추가
+scikit-learn
+joblib
+numpy
+pandas
+matplotlib
+seaborn
+wordcloud
