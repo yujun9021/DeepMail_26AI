@@ -236,7 +236,7 @@ class UIComponents:
     
     @staticmethod
     def process_user_prompt(prompt: str):
-        """사용자 프롬프트 처리"""
+        """사용자 프롬프트 처리 (최근 메일 분석 웹서치 연동)"""
         if not openai_service.client:
             st.error("❌ OpenAI API 키가 설정되지 않았습니다!")
             return
@@ -245,31 +245,44 @@ class UIComponents:
             st.warning("⚠️ 너무 짧은 입력입니다. 좀 더 구체적으로 입력해 주세요.")
             return
 
-        # 사용자 메시지 추가
+        # 최근 메일 분석 웹서치 분기
+        if "최근 메일 분석" in prompt or "최근 메일 분석해줘" in prompt:
+            with st.spinner("최근 메일을 웹서치 기반으로 분석 중입니다..."):
+                from openai_service import analyze_recent_mails_with_websearch
+                results = analyze_recent_mails_with_websearch(5)
+            st.session_state.messages.append({"role": "user", "content": prompt})
+            # 결과 예쁘게 출력
+            answer = ""
+            for i, r in enumerate(results, 1):
+                answer += f"\n### {i}. {r['subject']}\n"
+                answer += f"- **분석 결과:** {r['gpt_analysis']}\n"
+            st.session_state.messages.append({"role": "assistant", "content": answer})
+            return
+
+        # 기존 로직 (GPT 응답)
         st.session_state.messages.append({"role": "user", "content": prompt})
-        
-        # 챗봇 응답 생성
-        try:
-            assistant_response = openai_service.chat_with_function_call(prompt)
-            st.session_state.messages.append({"role": "assistant", "content": assistant_response})
-            
-            # 삭제 관련 작업 후에만 UI 새로고침
-            if st.session_state.get("needs_refresh", False):
-                st.session_state.needs_refresh = False
-                # Gmail 인증 상태 확인 후 새로고침
-                if st.session_state.gmail_authenticated:
-                    with st.spinner("메일 목록을 새로고침하는 중..."):
-                        UIComponents.refresh_gmail_messages()
-                        time.sleep(0.5)  # 잠시 대기 후 UI 새로고침
-                        st.rerun()
-                else:
-                    st.warning("⚠️ Gmail 인증이 필요합니다.")
-            
-        except Exception as e:
-            error_msg = f"❌ 응답 생성 중 오류: {str(e)}"
-            st.session_state.messages.append({"role": "assistant", "content": error_msg})
-            
-        st.rerun()
+        with st.chat_message("user"):
+            st.markdown(prompt)
+        with st.chat_message("assistant"):
+            message_placeholder = st.empty()
+            message_placeholder.markdown("🤔 생각 중...")
+            try:
+                assistant_response = openai_service.chat_with_function_call(prompt)
+                message_placeholder.markdown(assistant_response)
+                st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+                if st.session_state.get("needs_refresh", False):
+                    st.session_state.needs_refresh = False
+                    if st.session_state.gmail_authenticated:
+                        with st.spinner("메일 목록을 새로고침하는 중..."):
+                            UIComponents.refresh_gmail_messages()
+                            time.sleep(0.5)
+                            st.rerun()
+                    else:
+                        st.warning("⚠️ Gmail 인증이 필요합니다.")
+            except Exception as e:
+                error_msg = f"❌ 응답 생성 중 오류: {str(e)}"
+                message_placeholder.markdown(error_msg)
+                st.session_state.messages.append({"role": "assistant", "content": error_msg})
 
     @staticmethod
     def draw_gauge_chart(risk_score):
