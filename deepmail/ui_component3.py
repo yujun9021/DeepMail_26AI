@@ -4,22 +4,15 @@ DeepMail - UI 컴포넌트 모듈
 
 import streamlit as st
 import time
-import random
 import plotly.graph_objects as go
 from datetime import datetime
 from config import SESSION_KEYS, MAIL_CONFIG, PAGE_CONFIG
 from gmail_service import gmail_service, email_parser
 from openai_service import openai_service
-from googleapiclient.errors import HttpError
 
 class UIComponents:
     """UI 컴포넌트 클래스"""
-
-    @staticmethod
-    def rerun():
-        """Streamlit 재실행 트리거 함수 (experimental_rerun 대체)"""
-        st.session_state["rerun_flag"] = st.session_state.get("rerun_flag", 0) + 1
-
+    
     @staticmethod
     def initialize_session_state():
         """세션 상태 초기화"""
@@ -35,30 +28,30 @@ class UIComponents:
                     st.session_state[key] = 0
                 elif key == 'mail_page_size':
                     st.session_state[key] = MAIL_CONFIG['default_page_size']
-
+        
         # 세션에 인증 정보가 있으면 gmail_service 인스턴스에 복구
         if st.session_state.get('gmail_credentials'):
             gmail_service.credentials = st.session_state['gmail_credentials']
             try:
                 from googleapiclient.discovery import build
                 gmail_service.service = build('gmail', 'v1', credentials=gmail_service.credentials)
-            except Exception:
+            except Exception as e:
                 gmail_service.service = None
-
+    
     @staticmethod
     def render_sidebar():
         """사이드바 렌더링"""
         with st.sidebar:
             st.header("⚙️ 설정")
-
+            
             # OpenAI API 상태
             UIComponents.render_openai_status()
             st.markdown("---")
-
+            
             # Gmail 연결
             UIComponents.render_gmail_connection()
             st.markdown("---")
-
+            
             # 메일 페이지 크기 설정
             if st.session_state.gmail_authenticated:
                 st.subheader("📧 메일 설정")
@@ -71,9 +64,9 @@ class UIComponents:
                 if page_size != st.session_state.mail_page_size:
                     st.session_state.mail_page_size = page_size
                     st.session_state.mail_page = 0
-                    UIComponents.rerun()
+                    st.rerun()
                 st.markdown("---")
-
+            
             # 챗봇 설정
             model, temperature = UIComponents.render_chatbot_settings()
             st.session_state["sidebar_model"] = model
@@ -84,7 +77,7 @@ class UIComponents:
             if st.button("💬 채팅 기록 초기화"):
                 st.session_state.messages = []
                 st.success("✅ 채팅 기록이 초기화되었습니다!")
-
+    
     @staticmethod
     def render_openai_status():
         """OpenAI API 상태 표시"""
@@ -93,21 +86,21 @@ class UIComponents:
         else:
             st.error("❌ OPENAI_API_KEY 환경변수가 설정되지 않았습니다.")
             st.info("💡 .env 파일에 OPENAI_API_KEY=your_api_key_here를 추가하세요.")
-
+    
     @staticmethod
     def render_gmail_connection():
         """Gmail 연결 섹션"""
         st.subheader("📧 Gmail 연결")
-
+        
         if not st.session_state.gmail_authenticated:
-            if st.button("🔑 Gmail 로그인", type="primary"):
+            if st.button("�� Gmail 로그인", type="primary"):
                 UIComponents.handle_gmail_login()
         else:
             st.success("✅ Gmail에 로그인되어 있습니다!")
-
+            
             if st.button("🚪 Gmail 로그아웃"):
                 UIComponents.handle_gmail_logout()
-
+    
     @staticmethod
     def handle_gmail_login():
         """Gmail 로그인 처리"""
@@ -117,12 +110,12 @@ class UIComponents:
                 st.session_state.gmail_credentials = creds
                 st.session_state.gmail_authenticated = True
                 st.success("✅ Gmail 로그인 성공!")
-                UIComponents.rerun()
+                st.rerun()
             else:
                 st.error("❌ Gmail 로그인 실패")
         except Exception as e:
             st.error(f"❌ Gmail 로그인 오류: {str(e)}")
-
+    
     @staticmethod
     def handle_gmail_logout():
         """Gmail 로그아웃 처리"""
@@ -132,8 +125,8 @@ class UIComponents:
         if os.path.exists('token.pickle'):
             os.remove('token.pickle')
         st.success("✅ Gmail 로그아웃 완료!")
-        UIComponents.rerun()
-
+        st.rerun()
+    
     @staticmethod
     def refresh_gmail_messages():
         """Gmail 메시지 새로고침 (캐시 정리 포함)"""
@@ -141,12 +134,12 @@ class UIComponents:
         cache_keys_to_remove = [key for key in st.session_state.keys() if key.startswith('mail_content_')]
         for key in cache_keys_to_remove:
             del st.session_state[key]
-
+        
         messages = gmail_service.get_messages()
         st.session_state.gmail_messages = messages
         st.session_state.gmail_last_fetch = datetime.now()
         st.session_state.mail_page = 0
-
+    
     @staticmethod
     def render_chatbot_settings():
         """챗봇 설정 섹션"""
@@ -155,7 +148,7 @@ class UIComponents:
             ["gpt-3.5-turbo", "gpt-4"],
             help="사용할 OpenAI 모델을 선택하세요"
         )
-
+        
         temperature = st.slider(
             "창의성 (Temperature)",
             min_value=0.0,
@@ -164,19 +157,9 @@ class UIComponents:
             step=0.1,
             help="높을수록 더 창의적인 응답을 생성합니다"
         )
-
+        
         return model, temperature
     
-    @staticmethod
-    def safe_rerun():
-        version = tuple(map(int, st.__version__.split('.')))
-        if version >= (1, 25):
-            st.rerun()
-        elif version >= (1, 10):
-            st.experimental_rerun()
-        else:
-            st.warning("앱을 다시 새로고침 해주세요.")
-
     @staticmethod
     def render_chat_interface():
         """채팅 인터페이스 렌더링 (스타일링된 디자인)"""
@@ -217,47 +200,45 @@ class UIComponents:
 
         # 채팅 메시지 출력
         chat_html = '<div class="chat-box">'
+        import html  # 안전한 표시를 위해 추가
         for msg in st.session_state.messages:
             role = msg['role']
             content = msg['content']
+            safe_content = html.escape(str(content)).replace('\n', '<br>')
             if role == "user":
-                chat_html += f'<div style="text-align:right;"><div class="user-msg">{content}</div></div>'
+                chat_html += f'<div style="text-align:right;"><div class="user-msg">{safe_content}</div></div>'
             else:
-                chat_html += f'<div style="text-align:left;"><div class="assistant-msg">{content}</div></div>'
+                chat_html += f'<div style="text-align:left;"><div class="assistant-msg">{safe_content}</div></div>'
         chat_html += '</div>'
         st.markdown(chat_html, unsafe_allow_html=True)
-
-        # "답변 생성 중..." 메시지 감지 후 API 호출 및 응답 반영
-        if st.session_state.messages and st.session_state.messages[-1]["content"] == "🤔 답변 생성 중...":
-            # 호출 중복 방지용 플래그 추가
-            if not st.session_state.get("processing_response", False):
-                st.session_state["processing_response"] = True
-
-                # 가장 최근 user 메시지 가져오기
-                last_user_msg = next(
-                    (m["content"] for m in reversed(st.session_state.messages) if m["role"] == "user"), None
-                )
-                if last_user_msg:
-                    try:
-                        assistant_response = openai_service.chat_with_function_call(last_user_msg)
-                        st.session_state.messages[-1]["content"] = assistant_response
-
-                        mail_keywords = ["삭제", "휴지통", "요약", "메일", "피싱", "새로고침"]
-                        if any(kw in last_user_msg.lower() for kw in mail_keywords):
-                            if st.session_state.get("gmail_authenticated", False):
-                                UIComponents.refresh_gmail_messages()
-
-                    except Exception as e:
-                        st.session_state.messages[-1]["content"] = f"❌ 응답 생성 중 오류: {str(e)}"
-
-                # API 호출 후 플래그 초기화 및 재실행
-                st.session_state["processing_response"] = False
-                UIComponents.safe_rerun()
-
-
+    
+    @staticmethod
+    def handle_chat_input():
+        """채팅 입력 처리 (예시 프롬프트 버튼 포함)"""
+        prompt = st.chat_input("메시지를 입력하세요...")
+        
+        # 예시 프롬프트 버튼들
+        st.markdown("### 💡 예시 프롬프트")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("📌 최근 메일 요약"):
+                UIComponents.process_user_prompt("최근 5개 메일 요약해줘")
+        
+        with col2:
+            if st.button("🗑️ 피싱 메일 삭제"):
+                UIComponents.process_user_prompt("피싱 메일을 찾아서 삭제해줘")
+        
+        with col3:
+            if st.button("📊 메일 통계"):
+                UIComponents.process_user_prompt("메일 통계를 알려줘")
+        
+        if prompt:
+            UIComponents.process_user_prompt(prompt)
+    
+    @staticmethod
     def process_user_prompt(prompt: str):
-        #global client
-
+        """사용자 프롬프트 처리"""
         if not openai_service.client:
             st.error("❌ OpenAI API 키가 설정되지 않았습니다!")
             return
@@ -266,52 +247,46 @@ class UIComponents:
             st.warning("⚠️ 너무 짧은 입력입니다. 좀 더 구체적으로 입력해 주세요.")
             return
 
-        # 사용자 메시지 저장
+        # 사용자 메시지 추가
         st.session_state.messages.append({"role": "user", "content": prompt})
-        # 답변 생성 중 메시지 추가
-        st.session_state.messages.append({"role": "assistant", "content": "🤔 답변 생성 중..."})
+        
+        # 챗봇 응답 생성
+        try:
+            assistant_response, phishing_result = openai_service.chat_with_function_call(prompt)
+            st.session_state.messages.append({"role": "assistant", "content": assistant_response})
 
-        # 앱 재실행하여 답변 생성 로직 트리거
-        UIComponents.safe_rerun()
+            # If phishing check result exists, append a formatted message
+            if phishing_result is not None and isinstance(phishing_result, dict):
+                # Format phishing result
+                if phishing_result.get("error"):
+                    phishing_msg = f"❗️ 피싱 판별 오류: {phishing_result['error']}"
+                    if 'traceback' in phishing_result:
+                        phishing_msg += f"\n<details><summary>Traceback</summary><pre>{phishing_result['traceback']}</pre></details>"
+                else:
+                    subject = phishing_result.get('subject', '-')
+                    sender = phishing_result.get('sender', '-')
+                    result = phishing_result.get('result', '-')
+                    proba = phishing_result.get('probability', None)
+                    proba_str = f" ({proba*100:.1f}%)" if proba is not None else ""
+                    emoji = "🚨 피싱 의심" if result == "phishing" else "✅ 안전"
+                    phishing_msg = f"**{emoji}**\n**제목:** {subject}\n**발신자:** {sender}\n**결과:** {result}{proba_str}"
+                st.session_state.messages.append({"role": "assistant", "content": phishing_msg})
 
-    @staticmethod
-    def handle_chat_input():
-        """채팅 입력 처리 (예시 프롬프트 버튼 포함)"""
-        prompt = st.chat_input("메시지를 입력하세요...")
-
-        # 동적으로 컬럼 개수를 actions 길이만큼 설정
-        actions = [
-            ("📰", "최근 메일 요약",      "최근 5개 메일 요약해줘",       "mail_summary"),
-            ("🗑️", "피싱 메일 삭제",     "피싱 메일을 찾아서 삭제해줘", "phishing_delete"),
-            ("📊", "메일 통계",         "메일 통계를 알려줘",          "mail_stats"),
-        ]
-        cols = st.columns(len(actions), gap="small")
-
-        # 각 컬럼에 버튼+라벨 -> 가로 정렬
-        for col, (icon, label, cmd, key) in zip(cols, actions):
-            with col:
-                clicked = st.button(icon, key=key, help=label)
-                if clicked:
-                    UIComponents.process_user_prompt(cmd)
-
-                st.markdown(
-                    f'''
-                    <div style="
-                        display:inline-block;
-                        width:48px;
-                        margin:0px auto 0;
-                        text-align:center;
-                        font-size:12px;
-                        color:#333;
-                        white-space:nowrap;
-                    ">{label}</div>
-                    ''',
-                    unsafe_allow_html=True
-                )
-
-        if prompt:
-            UIComponents.process_user_prompt(prompt)
-
+            # 삭제 관련 작업 후에만 UI 새로고침
+            if st.session_state.get("needs_refresh", False):
+                st.session_state.needs_refresh = False
+                # Gmail 인증 상태 확인 후 새로고침
+                if st.session_state.gmail_authenticated:
+                    with st.spinner("메일 목록을 새로고침하는 중..."):
+                        UIComponents.refresh_gmail_messages()
+                        time.sleep(0.5)  # 잠시 대기 후 UI 새로고침
+                        st.rerun()
+                else:
+                    st.warning("⚠️ Gmail 인증이 필요합니다.")
+        except Exception as e:
+            error_msg = f"❌ 응답 생성 중 오류: {str(e)}"
+            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+        st.rerun()
 
     @staticmethod
     def draw_gauge_chart(risk_score):
@@ -330,55 +305,53 @@ class UIComponents:
                 ]
             }
         ))
-
+        
         # 차트 크기 조정
         fig.update_layout(
-            height=250,
-            margin=dict(l=20, r=20, t=60, b=20)
+            height=250,  # 높이를 300px로 설정
+            margin=dict(l=20, r=20, t=60, b=20)  # 여백 줄이기
         )
-
+        
         st.plotly_chart(fig, use_container_width=True)
-
+    
     @staticmethod
     def render_phishing_dashboard():
         """피싱/스팸 메일 대시보드"""
-        st.header("🛡️ 피싱/스팸 메일 대시보드")
 
         # 4개 컬럼으로 성능 지표 표시
-
+      
         # 게이지 차트와 추가 통계를 2개 컬럼으로 배치
         col1, col2 = st.columns([1, 1])
-
+        
         with col1:
             UIComponents.draw_gauge_chart(55.5)
-
+        
         with col2:
-            col1, col2, col3, col4 = st.columns(4)
-
-            with col1:
-                st.metric("총 메일 수", "1,234", "+12%")
-
-            with col2:
-                st.metric("피싱 의심", "23", "-5%")
-
-            with col3:
-                st.metric("스팸 감지", "156", "+8%")
-
-            with col4:
-                st.metric("안전 메일", "1,055", "+15%")
-
+              col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric("총 메일 수", "1,234", "+12%")
+            
+        with col2:
+            st.metric("피싱 의심", "23", "-5%")
+        with col3:
+            st.metric("스팸 감지", "156", "+8%")
+        with col4:
+            st.metric("안전 메일", "1,055", "+15%")
+        
+    
     @staticmethod
     def get_mail_full_content(message_id):
-        """메일의 전체 내용을 가져오는 함수 (캐싱 최적화 + 예외 대응 + 429 처리)"""
+        """메일의 전체 내용을 가져오는 함수 (캐싱 최적화)"""
+        # 캐시 키 생성
         cache_key = f"mail_content_{message_id}"
-
+        
+        # 캐시된 내용이 있으면 반환
         if cache_key in st.session_state:
             return st.session_state[cache_key]
-
+        
         try:
-            # Gmail API 과부하 방지 (429 방지용 랜덤 지연)
-            time.sleep(random.uniform(0.1, 0.4))
-
+            # Raw 형식으로 메일 가져오기
             email_message = gmail_service.get_raw_message(message_id)
             if not email_message:
                 result = {
@@ -391,17 +364,22 @@ class UIComponents:
                     'attachments': [],
                     'error': True
                 }
+                # 에러 결과도 캐시
                 st.session_state[cache_key] = result
                 return result
-
+            
+            # 헤더 정보 추출
             subject = email_message.get('Subject', '제목 없음')
             from_addr = email_message.get('From', '발신자 없음')
             to_addr = email_message.get('To', '수신자 없음')
             date = email_message.get('Date', '날짜 없음')
-
+            
+            # 본문 추출
             text_content, html_content = email_parser.extract_text_from_email(email_message)
+            
+            # 첨부파일 추출
             attachments = email_parser.extract_attachments(email_message)
-
+            
             result = {
                 'subject': subject,
                 'from': from_addr,
@@ -412,31 +390,25 @@ class UIComponents:
                 'attachments': attachments,
                 'error': False
             }
-
+            
+            # 결과를 캐시에 저장
             st.session_state[cache_key] = result
             return result
-
-        except HttpError as http_err:
-            if http_err.resp.status == 429:
-                error_msg = "⚠️ 너무 많은 요청이 발생했습니다. 잠시 후 다시 시도해 주세요."
-            else:
-                error_msg = f"❌ Gmail API 오류: {str(http_err)}"
+            
         except Exception as e:
-            error_msg = f"❌ 메일 내용을 가져오는 중 오류가 발생했습니다: {str(e)}"
-
-        # 공통 오류 반환
-        result = {
-            'subject': '오류',
-            'from': '오류',
-            'to': '오류',
-            'date': '오류',
-            'body_text': error_msg,
-            'body_html': '',
-            'attachments': [],
-            'error': True
-        }
-        st.session_state[cache_key] = result
-        return result
+            result = {
+                'subject': '오류',
+                'from': '오류',
+                'to': '오류',
+                'date': '오류',
+                'body_text': f'메일 내용을 가져오는 중 오류가 발생했습니다: {str(e)}',
+                'body_html': '',
+                'attachments': [],
+                'error': True
+            }
+            # 에러 결과도 캐시
+            st.session_state[cache_key] = result
+            return result
     
     @staticmethod
     def render_mail_management():
@@ -459,7 +431,7 @@ class UIComponents:
                 total_pages = (total_messages + st.session_state.mail_page_size - 1) // st.session_state.mail_page_size
                 
                 # 페이지네이션 버튼
-                cols = st.columns([2, 2, 1, 1, 1, 1, 1, 3])
+                cols = st.columns([2, 1, 1, 1, 1, 1, 1, 2])
 
                 with cols[0]:
                     if st.button("🔄 새로고침"):
@@ -484,7 +456,7 @@ class UIComponents:
                         st.session_state.mail_page = total_pages - 1
                         st.rerun()
                 with cols[7]:
-                    st.info(f"총 {total_messages}개 메일 (페이지 {st.session_state.mail_page + 1}/{total_pages})")
+                    st.info(f"페이지 {st.session_state.mail_page + 1}/{total_pages}")
                 
                 
                 # 현재 페이지의 메일들 표시
