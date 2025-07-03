@@ -131,7 +131,7 @@ class OpenAIService:
                         content_text = msg['snippet']  # 폴백
                 
                 # 요약 프롬프트 생성
-                prompt = f"""다음 이메일을 3줄 이내로 요약해줘.
+                prompt = f"""다음 이메일을 요약해줘.
 
 제목: {msg['subject']}
 발신자: {msg['sender']}
@@ -326,6 +326,107 @@ class OpenAIService:
             return {
                 "error": f"{index+1}번 메일이 존재하지 않습니다."
             }
+
+def analyze_recent_mails_with_websearch(n=5):
+    """
+    최근 n개 메일을 웹서치 기반으로 피싱 여부, 확률, 근거를 분석합니다.
+    반환값: [{subject, snippet, gpt_analysis} ...]
+    """
+    client = OpenAI()
+    messages = st.session_state.gmail_messages or []
+    results = []
+    for msg in messages[:n]:
+        subject = msg.get('subject', '')
+        snippet = msg.get('snippet', '')
+        prompt = (
+            f"아래는 이메일 제목과 내용입니다.\n"
+            f"제목: {subject}\n"
+            f"내용: {snippet}\n"
+            "이 메일이 피싱일 가능성이 있는지, 확률(0~1)과 판단 근거를 웹 검색을 활용해 알려줘."
+        )
+        response = client.responses.create(
+            model="gpt-4o",
+            tools=[{"type": "web_search"}],
+            input=prompt
+        )
+        answer = response.output_text
+        results.append({
+            "subject": subject,
+            "snippet": snippet,
+            "gpt_analysis": answer
+        })
+    return results
+
+def analyze_mail_with_agent(index):
+    """
+    OpenAI tool_calls(function calling + web_search)를 결합한 에이전트 스타일 메일 분석 함수.
+    """
+    client = OpenAI()
+    
+    # 1. 툴 목록 통합: FunctionSchema와 web_search를 하나의 tools 리스트로 관리
+    tools = [
+        {"type": "web_search"}
+    ]
+    # FunctionSchema의 각 함수를 tool 형식으로 변환하여 추가
+    for func_schema in FunctionSchema:
+        tools.append({"type": "function", "function": func_schema})
+
+    # 2. 초기 메시지 설정
+    user_prompt = f"{index + 1}번 메일의 피싱 여부를 분석해줘."
+    messages = [{"role": "user", "content": user_prompt}]
+
+    # 3. API 호출 루프
+    while True:
+        try:
+            # ✅ 올바른 API 함수와 파라미터 사용
+            response = client.chat.completions.create(
+                model="gpt-4o",
+                messages=messages,
+                tools=tools,
+                tool_choice="auto" # 모델이 툴 사용을 자율적으로 결정
+            )
+
+            response_message = response.choices[0].message
+            
+            # 4. 모델이 툴 사용을 요청했는지 확인
+            if response_message.tool_calls:
+                # 모델의 응답(툴 사용 요청)을 메시지 기록에 추가
+                messages.append(response_message)
+                
+                # 각 툴 호출 실행
+                for tool_call in response_message.tool_calls:
+                    function_name = tool_call.function.name
+                    
+                    # web_search는 OpenAI가 자동으로 처리하므로 별도 실행 불필요
+                    # 우리가 직접 만든 함수(FunctionSchema에 정의된 것)만 실행
+                    if function_name != "web_search":
+                        arguments = json.loads(tool_call.function.arguments)
+                        
+                        # 디버깅: 어떤 함수가 어떤 인자로 호출되는지 확인
+                        print(f"🔍 Calling function: {function_name} with args: {arguments}")
+                        
+                        # 실제 함수 실행
+                        function_result = openai_service.handle_function_call(function_name, arguments)
+                        
+                        # 함수 실행 결과를 메시지 기록에 추가
+                        messages.append({
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": function_name,
+                            "content": json.dumps(function_result, ensure_ascii=False)
+                        })
+
+                # 함수 실행 결과를 반영하여 다시 API 호출 (루프 계속)
+                continue
+
+            # 5. 툴 사용 없이 최종 답변이 오면 루프 종료 및 반환
+            final_content = response_message.content
+            return final_content
+
+        except Exception as e:
+            return f"❌ 분석 중 오류가 발생했습니다: {str(e)}"
+
+    return "❌ 분석에 실패했습니다."
 
 # 전역 OpenAI 서비스 인스턴스
 openai_service = OpenAIService()
