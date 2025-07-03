@@ -162,59 +162,115 @@ class UIComponents:
     
     @staticmethod
     def render_chat_interface():
-        """채팅 인터페이스 렌더링"""
+        """채팅 인터페이스 렌더링 (스타일링된 디자인)"""
         st.subheader("🤖 AI 챗봇")
-        
-        # 기존 메시지 표시
+
+        # 스타일 적용
+        chat_box_style = """
+        <style>
+        .chat-box {
+            height: 500px;
+            overflow-y: auto;
+            padding: 10px;
+            border-radius: 8px;
+            border: 1px solid #ddd;
+            background-color: #f9f9f9;
+        }
+        .user-msg {
+            text-align: right;
+            background-color: #d0e7ff;
+            padding: 8px 12px;
+            border-radius: 15px;
+            margin-bottom: 8px;
+            display: inline-block;
+            max-width: 80%;
+        }
+        .assistant-msg {
+            text-align: left;
+            background-color: #e8e8e8;
+            padding: 8px 12px;
+            border-radius: 15px;
+            margin-bottom: 8px;
+            display: inline-block;
+            max-width: 80%;
+        }
+        </style>
+        """
+        st.markdown(chat_box_style, unsafe_allow_html=True)
+
+        # 채팅 메시지 출력
+        chat_html = '<div class="chat-box">'
         for msg in st.session_state.messages:
-            with st.chat_message(msg['role']):
-                st.markdown(msg['content'])
+            role = msg['role']
+            content = msg['content']
+            if role == "user":
+                chat_html += f'<div style="text-align:right;"><div class="user-msg">{content}</div></div>'
+            else:
+                chat_html += f'<div style="text-align:left;"><div class="assistant-msg">{content}</div></div>'
+        chat_html += '</div>'
+        st.markdown(chat_html, unsafe_allow_html=True)
     
     @staticmethod
     def handle_chat_input():
-        """채팅 입력 처리"""
+        """채팅 입력 처리 (예시 프롬프트 버튼 포함)"""
         prompt = st.chat_input("메시지를 입력하세요...")
+        
+        # 예시 프롬프트 버튼들
+        st.markdown("### 💡 예시 프롬프트")
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if st.button("📌 최근 메일 요약"):
+                UIComponents.process_user_prompt("최근 5개 메일 요약해줘")
+        
+        with col2:
+            if st.button("🗑️ 피싱 메일 삭제"):
+                UIComponents.process_user_prompt("피싱 메일을 찾아서 삭제해줘")
+        
+        with col3:
+            if st.button("📊 메일 통계"):
+                UIComponents.process_user_prompt("메일 통계를 알려줘")
+        
         if prompt:
-            if not openai_service.client:
-                st.error("❌ OpenAI API 키가 설정되지 않았습니다!")
-                return
-            
-            # 사용자 메시지 추가
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            
-            # 사용자 메시지 표시
-            with st.chat_message("user"):
-                st.markdown(prompt)
-            
-            # 챗봇 응답 생성
-            with st.chat_message("assistant"):
-                message_placeholder = st.empty()
-                message_placeholder.markdown("🤔 생각 중...")
-                
-                try:
-                    # Function calling을 활용한 응답 생성
-                    assistant_response = openai_service.chat_with_function_call(prompt)
-                    
-                    message_placeholder.markdown(assistant_response)
-                    st.session_state.messages.append({"role": "assistant", "content": assistant_response})
-                    
-                    # 삭제 관련 작업 후에만 UI 새로고침
-                    if st.session_state.get("needs_refresh", False):
-                        st.session_state.needs_refresh = False
-                        # Gmail 인증 상태 확인 후 새로고침
-                        if st.session_state.gmail_authenticated:
-                            with st.spinner("메일 목록을 새로고침하는 중..."):
-                                UIComponents.refresh_gmail_messages()
-                                time.sleep(0.5)  # 잠시 대기 후 UI 새로고침
-                                st.rerun()
-                        else:
-                            st.warning("⚠️ Gmail 인증이 필요합니다.")
-                            
-                except Exception as e:
-                    error_msg = f"❌ 응답 생성 중 오류: {str(e)}"
-                    message_placeholder.markdown(error_msg)
-                    st.session_state.messages.append({"role": "assistant", "content": error_msg})
+            UIComponents.process_user_prompt(prompt)
     
+    @staticmethod
+    def process_user_prompt(prompt: str):
+        """사용자 프롬프트 처리"""
+        if not openai_service.client:
+            st.error("❌ OpenAI API 키가 설정되지 않았습니다!")
+            return
+
+        if len(prompt.strip()) < 3:
+            st.warning("⚠️ 너무 짧은 입력입니다. 좀 더 구체적으로 입력해 주세요.")
+            return
+
+        # 사용자 메시지 추가
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        
+        # 챗봇 응답 생성
+        try:
+            assistant_response = openai_service.chat_with_function_call(prompt)
+            st.session_state.messages.append({"role": "assistant", "content": assistant_response})
+            
+            # 삭제 관련 작업 후에만 UI 새로고침
+            if st.session_state.get("needs_refresh", False):
+                st.session_state.needs_refresh = False
+                # Gmail 인증 상태 확인 후 새로고침
+                if st.session_state.gmail_authenticated:
+                    with st.spinner("메일 목록을 새로고침하는 중..."):
+                        UIComponents.refresh_gmail_messages()
+                        time.sleep(0.5)  # 잠시 대기 후 UI 새로고침
+                        st.rerun()
+                else:
+                    st.warning("⚠️ Gmail 인증이 필요합니다.")
+            
+        except Exception as e:
+            error_msg = f"❌ 응답 생성 중 오류: {str(e)}"
+            st.session_state.messages.append({"role": "assistant", "content": error_msg})
+            
+        st.rerun()
+
     @staticmethod
     def draw_gauge_chart(risk_score):
         """위험도 게이지 차트"""
