@@ -7,6 +7,8 @@ import os
 import json
 from openai import OpenAI
 from config import OPENAI_CONFIG
+from gmail_service import gmail_service
+from gmail_service import email_parser
 
 # Function Calling 스키마 정의
 FunctionSchema = [
@@ -98,7 +100,7 @@ class OpenAIService:
             return f"❌ 오류가 발생했습니다: {error_message}"
     
     def summarize_mails(self, indices, model=None, temperature=None):
-        """메일 요약"""
+        """메일 요약 (전체 내용 기반으로 개선)"""
         if not self.client:
             return "❌ OpenAI API 키가 설정되지 않았습니다."
         
@@ -111,7 +113,30 @@ class OpenAIService:
         for idx in indices:
             if 0 <= idx < len(messages):
                 msg = messages[idx]
-                prompt = f"다음 이메일을 3줄 이내로 요약해줘.\n\n제목: {msg['subject']}\n내용: {msg['snippet']}"
+                
+                # 전체 메일 내용 가져오기 (캐시 활용)
+                from ui_component import UIComponents
+                full_content = UIComponents.get_mail_full_content(msg['id'])
+                
+                if full_content['error']:
+                    # 전체 내용 가져오기 실패 시 스니펫으로 대체
+                    content_text = msg['snippet']
+                else:
+                    # 전체 내용 사용 (텍스트 우선, HTML이 있으면 텍스트로 변환)
+                    if full_content['body_text']:
+                        content_text = full_content['body_text']
+                    elif full_content['body_html']:
+                        content_text = email_parser.extract_text_from_html(full_content['body_html'])
+                    else:
+                        content_text = msg['snippet']  # 폴백
+                
+                # 요약 프롬프트 생성
+                prompt = f"""다음 이메일을 3줄 이내로 요약해줘.
+
+제목: {msg['subject']}
+발신자: {msg['sender']}
+내용: {content_text[:2000]}"""  # 내용이 너무 길면 잘라내기
+                
                 try:
                     response = self.client.chat.completions.create(
                         model=model,
@@ -196,10 +221,12 @@ class OpenAIService:
     def handle_function_call(self, function_name, arguments):
         """Function calling 결과를 실제 함수로 실행"""
         try:
+            # 디버깅: 함수 호출 로그
+            print(f"🔍 Function call: {function_name} with arguments: {arguments}")
+            
             if function_name == "move_message_to_trash":
                 message_id = arguments.get("message_id")
                 if message_id:
-                    from deepmail.gmail_service import gmail_service
                     success = gmail_service.move_to_trash(message_id)
                     return {"success": success, "message": "메일이 휴지통으로 이동되었습니다." if success else "메일 이동에 실패했습니다."}
                 else:
@@ -268,14 +295,18 @@ class OpenAIService:
     
     def delete_mails_by_indices(self, indices):
         """번호(인덱스) 리스트로 여러 메일을 휴지통으로 이동"""
+        # 디버깅: 삭제 함수 호출 로그
+        print(f"🗑️ delete_mails_by_indices called with indices: {indices}")
+        
         results = []
         messages = st.session_state.gmail_messages
-        from deepmail.gmail_service import gmail_service
         
         for idx in indices:
             if 0 <= idx < len(messages):
                 msg_id = messages[idx]['id']
+                print(f"🗑️ Attempting to delete mail {idx+1} with ID: {msg_id}")
                 result = gmail_service.move_to_trash(msg_id)
+                print(f"🗑️ Delete result for mail {idx+1}: {result}")
                 results.append({"index": idx, "success": result})
             else:
                 results.append({"index": idx, "success": False, "error": "존재하지 않는 번호"})
@@ -297,4 +328,13 @@ class OpenAIService:
             }
 
 # 전역 OpenAI 서비스 인스턴스
-openai_service = OpenAIService() 
+openai_service = OpenAIService()
+
+# 세션에 인증 정보가 있으면 gmail_service에 credentials와 service를 복구
+if st.session_state.get('gmail_credentials'):
+    gmail_service.credentials = st.session_state['gmail_credentials']
+    try:
+        from googleapiclient.discovery import build
+        gmail_service.service = build('gmail', 'v1', credentials=gmail_service.credentials)
+    except Exception as e:
+        gmail_service.service = None 

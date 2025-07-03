@@ -28,6 +28,15 @@ class UIComponents:
                     st.session_state[key] = 0
                 elif key == 'mail_page_size':
                     st.session_state[key] = MAIL_CONFIG['default_page_size']
+        
+        # 세션에 인증 정보가 있으면 gmail_service 인스턴스에 복구
+        if st.session_state.get('gmail_credentials'):
+            gmail_service.credentials = st.session_state['gmail_credentials']
+            try:
+                from googleapiclient.discovery import build
+                gmail_service.service = build('gmail', 'v1', credentials=gmail_service.credentials)
+            except Exception as e:
+                gmail_service.service = None
     
     @staticmethod
     def render_sidebar():
@@ -84,7 +93,7 @@ class UIComponents:
         st.subheader("📧 Gmail 연결")
         
         if not st.session_state.gmail_authenticated:
-            if st.button("🔑 Gmail 로그인", type="primary"):
+            if st.button("�� Gmail 로그인", type="primary"):
                 UIComponents.handle_gmail_login()
         else:
             st.success("✅ Gmail에 로그인되어 있습니다!")
@@ -120,7 +129,12 @@ class UIComponents:
     
     @staticmethod
     def refresh_gmail_messages():
-        """Gmail 메시지 새로고침"""
+        """Gmail 메시지 새로고침 (캐시 정리 포함)"""
+        # 메일 내용 캐시 정리
+        cache_keys_to_remove = [key for key in st.session_state.keys() if key.startswith('mail_content_')]
+        for key in cache_keys_to_remove:
+            del st.session_state[key]
+        
         messages = gmail_service.get_messages()
         st.session_state.gmail_messages = messages
         st.session_state.gmail_last_fetch = datetime.now()
@@ -256,12 +270,19 @@ class UIComponents:
     
     @staticmethod
     def get_mail_full_content(message_id):
-        """메일의 전체 내용을 가져오는 함수 (Raw 형식 사용)"""
+        """메일의 전체 내용을 가져오는 함수 (캐싱 최적화)"""
+        # 캐시 키 생성
+        cache_key = f"mail_content_{message_id}"
+        
+        # 캐시된 내용이 있으면 반환
+        if cache_key in st.session_state:
+            return st.session_state[cache_key]
+        
         try:
             # Raw 형식으로 메일 가져오기
             email_message = gmail_service.get_raw_message(message_id)
             if not email_message:
-                return {
+                result = {
                     'subject': '오류',
                     'from': '오류',
                     'to': '오류',
@@ -271,6 +292,9 @@ class UIComponents:
                     'attachments': [],
                     'error': True
                 }
+                # 에러 결과도 캐시
+                st.session_state[cache_key] = result
+                return result
             
             # 헤더 정보 추출
             subject = email_message.get('Subject', '제목 없음')
@@ -284,7 +308,7 @@ class UIComponents:
             # 첨부파일 추출
             attachments = email_parser.extract_attachments(email_message)
             
-            return {
+            result = {
                 'subject': subject,
                 'from': from_addr,
                 'to': to_addr,
@@ -295,8 +319,12 @@ class UIComponents:
                 'error': False
             }
             
+            # 결과를 캐시에 저장
+            st.session_state[cache_key] = result
+            return result
+            
         except Exception as e:
-            return {
+            result = {
                 'subject': '오류',
                 'from': '오류',
                 'to': '오류',
@@ -306,6 +334,9 @@ class UIComponents:
                 'attachments': [],
                 'error': True
             }
+            # 에러 결과도 캐시
+            st.session_state[cache_key] = result
+            return result
     
     @staticmethod
     def render_mail_management():
@@ -500,4 +531,4 @@ class UIComponents:
             else:
                 st.info("📭 메일이 없습니다.")
         else:
-            st.info(" Gmail에 로그인하면 메일 목록이 표시됩니다.") 
+            st.info(" Gmail에 로그인하면 메일 목록이 표시됩니다.")

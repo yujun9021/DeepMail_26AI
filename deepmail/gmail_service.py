@@ -66,7 +66,7 @@ class GmailService:
         return creds
     
     def get_messages(self, max_results=None):
-        """Gmail 메시지 목록 조회"""
+        """Gmail 메시지 목록 조회 (배치 요청으로 최적화)"""
         if not self.service:
             st.error("❌ Gmail 서비스가 초기화되지 않았습니다.")
             return []
@@ -76,21 +76,40 @@ class GmailService:
             results = self.service.users().messages().list(userId='me', maxResults=max_results).execute()
             messages = results.get('messages', [])
             
+            if not messages:
+                return []
+            
+            # 배치 요청으로 메일 상세 정보 가져오기
+            batch = self.service.new_batch_http_request()
             message_details = []
+            
+            def callback(request_id, response, exception):
+                if exception is None:
+                    headers = response['payload']['headers']
+                    subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '제목 없음')
+                    sender = next((h['value'] for h in headers if h['name'] == 'From'), '발신자 없음')
+                    
+                    message_details.append({
+                        'id': response['id'],
+                        'subject': subject,
+                        'sender': sender,
+                        'snippet': response.get('snippet', '')
+                    })
+                else:
+                    st.warning(f"메일 정보 가져오기 실패: {exception}")
+            
+            # 배치 요청에 메일 ID들 추가
             for message in messages:
-                msg = self.service.users().messages().get(userId='me', id=message['id']).execute()
-                headers = msg['payload']['headers']
-                subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '제목 없음')
-                sender = next((h['value'] for h in headers if h['name'] == 'From'), '발신자 없음')
-                
-                message_details.append({
-                    'id': message['id'],
-                    'subject': subject,
-                    'sender': sender,
-                    'snippet': msg.get('snippet', '')
-                })
+                batch.add(
+                    self.service.users().messages().get(userId='me', id=message['id']),
+                    callback=callback
+                )
+            
+            # 배치 요청 실행
+            batch.execute()
             
             return message_details
+            
         except Exception as e:
             st.error(f"❌ 메일 목록 조회 실패: {str(e)}")
             return []
