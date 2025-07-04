@@ -6,3 +6,5 @@ credentials.json
 token.pickle
 _pycache_/
 .aider*
+
+log/

@@ -5,6 +5,10 @@ google-api-python-client
 google-auth
 google-auth-httplib2
 google-auth-oauthlib
-requests 
+requests
 plotly
 beautifulsoup4
+pandas
+joblib
+scikit-learn
+numpy

@@ -156,8 +156,10 @@ class OpenAIService:
         return st.session_state.get('gmail_messages', [])
 
     def set_needs_refresh(self) -> None:
-        """메일 목록 새로고침 플래그 설정"""
-        st.session_state['needs_refresh'] = True
+        """메일 목록 새로고침 플래그 설정 (현재 사용하지 않음)"""
+        # 자동 새로고침을 제거하여 성능 향상
+        # st.session_state['needs_refresh'] = True
+        pass
 
     # ===== 웹서치 기능 (통합) =====
     
@@ -376,27 +378,36 @@ class OpenAIService:
             return {'error': f'[EXCEPTION] {str(e)}', 'traceback': tb}
 
     def summarize_mails(self, indices: List[int], model: Optional[str]=None, temperature: Optional[float]=None) -> str:
-        """메일 요약 (전체 내용 기반)"""
+        """메일 요약 (캐시 우선 사용)"""
         if not self.client:
             return "❌ OpenAI API 키가 설정되지 않았습니다."
         model = model or OPENAI_CONFIG['model']
         temperature = temperature if temperature is not None else OPENAI_CONFIG['temperature']
         messages = self.get_gmail_messages()
         summaries = []
+        
         for idx in indices:
             if 0 <= idx < len(messages):
                 msg = messages[idx]
-                from ui_component import UIComponents
-                full_content = UIComponents.get_mail_full_content(msg['id'])
-                if full_content['error']:
-                    content_text = msg['snippet']
+                
+                # 캐시된 메일 내용 우선 확인
+                cache_key = f"mail_content_{msg['id']}"
+                content_text = msg['snippet']  # 기본값
+                
+                if cache_key in st.session_state:
+                    # 캐시된 내용 사용
+                    full_content = st.session_state[cache_key]
+                    if not full_content['error']:
+                        if full_content['body_text']:
+                            content_text = full_content['body_text']
+                        elif full_content['body_html']:
+                            content_text = email_parser.extract_text_from_html(full_content['body_html'])
+                        else:
+                            content_text = msg['snippet']
                 else:
-                    if full_content['body_text']:
-                        content_text = full_content['body_text']
-                    elif full_content['body_html']:
-                        content_text = email_parser.extract_text_from_html(full_content['body_html'])
-                    else:
-                        content_text = msg['snippet']
+                    # 캐시에 없으면 기본 정보만 사용 (API 요청 없이)
+                    content_text = msg['snippet']
+                
                 prompt = f"""다음 이메일을 요약해줘.\n\n제목: {msg['subject']}\n발신자: {msg['sender']}\n내용: {content_text[:2000]}"""
                 try:
                     response = self.call_openai_chat(
@@ -467,16 +478,17 @@ class OpenAIService:
                     function_call="none"
                 )
                 response_content = final_response.choices[0].message.content
+                
+                # 메일 삭제 시 성공 메시지만 표시 (자동 새로고침 제거)
                 if function_name in ["move_message_to_trash", "delete_mails_by_indices"]:
                     if function_name == "move_message_to_trash":
                         if function_result.get("success", False):
-                            self.set_needs_refresh()
-                            st.success("✅ 메일 삭제 완료! 메일 목록을 새로고침합니다.")
+                            st.success("✅ 메일이 휴지통으로 이동되었습니다.")
                     elif function_name == "delete_mails_by_indices":
                         results = function_result.get("results", [])
                         if results and any(r.get("success", False) for r in results):
-                            self.set_needs_refresh()
-                            st.success("✅ 메일 삭제 완료! 메일 목록을 새로고침합니다.")
+                            st.success("✅ 메일 삭제가 완료되었습니다.")
+                
                 return response_content
             else:
                 return message.content

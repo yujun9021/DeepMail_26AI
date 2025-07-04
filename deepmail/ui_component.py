@@ -10,7 +10,7 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any
 from config import SESSION_KEYS, MAIL_CONFIG, PAGE_CONFIG
 from gmail_service import gmail_service, email_parser
-from openai_service import openai_service
+from openai_service_clean import openai_service
 from googleapiclient.errors import HttpError
 import pandas as pd
 
@@ -59,7 +59,7 @@ QUICK_ACTIONS = [
     ("📊", "메일 통계", "메일 통계를 알려줘", "mail_stats"),
 ]
 
-MAIL_KEYWORDS = ["삭제", "휴지통", "요약", "메일", "피싱", "새로고침"]
+MAIL_KEYWORDS = ["삭제", "휴지통", "메일", "피싱", "새로고침"]
 
 class UIComponents:
     """UI 컴포넌트 클래스 (최적화 버전)"""
@@ -155,9 +155,20 @@ class UIComponents:
     def _render_chat_reset():
         """채팅 기록 초기화 섹션"""
         st.markdown("---")
-        if st.button("💬 채팅 기록 초기화"):
-            st.session_state.messages = []
-            st.success("✅ 채팅 기록이 초기화되었습니다!")
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("💬 채팅 기록 초기화"):
+                st.session_state.messages = []
+                st.success("✅ 채팅 기록이 초기화되었습니다!")
+        
+        with col2:
+            if st.button("🗑️ 메일 캐시 초기화"):
+                # 메일 캐시 키들 찾아서 삭제
+                cache_keys_to_remove = [key for key in st.session_state.keys() if key.startswith('mail_content_')]
+                for key in cache_keys_to_remove:
+                    del st.session_state[key]
+                st.success(f"✅ {len(cache_keys_to_remove)}개 메일 캐시가 초기화되었습니다!")
 
     @staticmethod
     def render_openai_status():
@@ -177,7 +188,6 @@ class UIComponents:
             if st.button("🔑 Gmail 로그인", type="primary"):
                 UIComponents.handle_gmail_login()
         else:
-            st.success("✅ Gmail에 로그인되어 있습니다!")
             if st.button("🚪 Gmail 로그아웃"):
                 UIComponents.handle_gmail_logout()
 
@@ -189,9 +199,8 @@ class UIComponents:
             if creds:
                 st.session_state.gmail_credentials = creds
                 st.session_state.gmail_authenticated = True
-                st.success("✅ Gmail 로그인 성공!")
                 UIComponents.refresh_gmail_messages()
-                UIComponents.rerun()
+                st.rerun()
             else:
                 st.error("❌ Gmail 로그인 실패")
         except Exception as e:
@@ -202,11 +211,11 @@ class UIComponents:
         """Gmail 로그아웃 처리"""
         st.session_state.gmail_authenticated = False
         st.session_state.gmail_credentials = None
+        st.session_state.gmail_messages = None
         import os
         if os.path.exists('token.pickle'):
             os.remove('token.pickle')
-        st.success("✅ Gmail 로그아웃 완료!")
-        UIComponents.rerun()
+        st.rerun()
 
     @staticmethod
     def refresh_gmail_messages():
@@ -308,10 +317,7 @@ class UIComponents:
             assistant_response = openai_service.chat_with_function_call(user_message)
             st.session_state.messages[-1]["content"] = assistant_response
 
-            # 메일 관련 키워드가 있으면 새로고침
-            if any(kw in user_message.lower() for kw in MAIL_KEYWORDS):
-                if st.session_state.get("gmail_authenticated", False):
-                    UIComponents.refresh_gmail_messages()
+            # 자동 새로고침 제거 - 사용자가 직접 새로고침할 수 있도록 함
 
         except Exception as e:
             st.session_state.messages[-1]["content"] = f"❌ 응답 생성 중 오류: {str(e)}"
@@ -473,29 +479,47 @@ class UIComponents:
 
     @staticmethod
     def get_mail_full_content(message_id: str) -> Dict[str, Any]:
-        """메일의 전체 내용을 가져오는 함수"""
+        """메일의 전체 내용을 가져오는 함수 (재시도 로직 포함)"""
         cache_key = f"mail_content_{message_id}"
 
         if cache_key in st.session_state:
             return st.session_state[cache_key]
 
-        try:
-            time.sleep(random.uniform(0.1, 0.4))
-            email_message = gmail_service.get_raw_message(message_id)
-            
-            if not email_message:
-                return UIComponents._create_error_result(cache_key, "메일을 가져올 수 없습니다.")
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                # 재시도 시 더 긴 딜레이 (0.5~1.5초)
+                if attempt > 0:
+                    delay = random.uniform(0.5, 1.5) * (2 ** attempt)  # 지수 백오프
+                    time.sleep(delay)
+                else:
+                    time.sleep(random.uniform(0.2, 0.6))  # 첫 시도는 짧은 딜레이
+                
+                email_message = gmail_service.get_raw_message(message_id)
+                
+                if not email_message:
+                    return UIComponents._create_error_result(cache_key, "메일을 가져올 수 없습니다.")
 
-            result = UIComponents._parse_email_message(email_message)
-            st.session_state[cache_key] = result
-            return result
+                result = UIComponents._parse_email_message(email_message)
+                st.session_state[cache_key] = result
+                return result
 
-        except HttpError as http_err:
-            error_msg = UIComponents._handle_http_error(http_err)
-        except Exception as e:
-            error_msg = f"❌ 메일 내용을 가져오는 중 오류가 발생했습니다: {str(e)}"
+            except HttpError as http_err:
+                if "429" in str(http_err) and attempt < max_retries - 1:
+                    st.warning(f"⚠️ 요청이 너무 많습니다. 잠시 후 재시도합니다... ({attempt + 1}/{max_retries})")
+                    continue
+                else:
+                    error_msg = UIComponents._handle_http_error(http_err)
+                    return UIComponents._create_error_result(cache_key, error_msg)
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    st.warning(f"⚠️ 메일 로딩 중 오류가 발생했습니다. 재시도합니다... ({attempt + 1}/{max_retries})")
+                    continue
+                else:
+                    error_msg = f"❌ 메일 내용을 가져오는 중 오류가 발생했습니다: {str(e)}"
+                    return UIComponents._create_error_result(cache_key, error_msg)
 
-        return UIComponents._create_error_result(cache_key, error_msg)
+        return UIComponents._create_error_result(cache_key, "최대 재시도 횟수를 초과했습니다.")
 
     @staticmethod
     def _create_error_result(cache_key: str, error_msg: str) -> Dict[str, Any]:
@@ -610,14 +634,24 @@ class UIComponents:
     @staticmethod
     def _render_mail_item(msg: Dict, global_idx: int):
         """개별 메일 아이템 렌더링"""
+        cache_key = f"mail_content_{msg['id']}"
+        is_cached = cache_key in st.session_state
+        
         with st.expander(f"📧 [{global_idx + 1}] {msg['subject']}", expanded=False):
             # 기본 정보 표시
             st.write(f"**📧 발신자:** {msg['sender']}")
             st.write(f"**📄 내용:** {msg['snippet']}")
             
+            # 캐시 상태 표시
+            if is_cached:
+                st.success("✅ 캐시된 메일 (빠른 로딩)")
+            
             # 메일 전체 내용 로드
-            with st.spinner("메일 내용을 불러오는 중..."):
-                full_content = UIComponents.get_mail_full_content(msg['id'])
+            if not is_cached:
+                with st.spinner("메일 내용을 불러오는 중..."):
+                    full_content = UIComponents.get_mail_full_content(msg['id'])
+            else:
+                full_content = st.session_state[cache_key]
             
             if full_content['error']:
                 st.error("메일을 불러올 수 없습니다.")
