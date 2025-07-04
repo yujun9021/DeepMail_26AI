@@ -6,7 +6,7 @@ from config import PAGE_CONFIG
 def main():
     UIComponents.initialize_session_state()
     st.set_page_config(**PAGE_CONFIG)
-    st.title("DeepMail - AI 챗봇 & Gmail 관리")
+    st.title("DeepMail - 챗봇을 통한 메일 관리 시스템")
 
     UIComponents.render_sidebar()
     

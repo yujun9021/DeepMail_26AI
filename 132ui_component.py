@@ -10,9 +10,8 @@ from datetime import datetime
 from typing import Dict, List, Tuple, Optional, Any
 from config import SESSION_KEYS, MAIL_CONFIG, PAGE_CONFIG
 from gmail_service import gmail_service, email_parser
-from openai_service import openai_service
+from openai_service_clean import openai_service
 from googleapiclient.errors import HttpError
-import pandas as pd
 
 # 상수 정의
 CHAT_STYLES = """
@@ -384,8 +383,8 @@ class UIComponents:
         ))
 
         fig.update_layout(
-            height=400
-            # margin=dict(l=20, r=20, t=130, b=10)
+            height=250,
+            margin=dict(l=20, r=20, t=60, b=20)
         )
 
         st.plotly_chart(fig, use_container_width=True)
@@ -393,6 +392,7 @@ class UIComponents:
     @staticmethod
     def render_phishing_dashboard():
         """피싱/스팸 메일 대시보드"""
+        st.header("🛡️ 피싱/스팸 메일 대시보드")
 
         col1, col2 = st.columns([1, 1])
 
@@ -404,35 +404,18 @@ class UIComponents:
 
     @staticmethod
     def _render_metrics():
-        st.markdown("### 🎣 피싱 메일 키워드 유형 TOP3")
-
-        keyword_data = {
-            "순위": ["1위", "2위", "3위"],
-            "유형": ["결제·구매", "배송·물류", "공지·알림"],
-            "비율": ["27.7%", "20.6%", "8.7%"],
-            "대표 키워드": [
-                "'Payment(결제)', 'Order(주문)', 'Invoice(청구서)'",
-                "'Delivery(배송)', 'Shipment(운송)', 'Customs(세관)'",
-                "'Urgent(긴급)', 'Notice(안내)'"
-            ]
-        }
-        df_keywords = pd.DataFrame(keyword_data)
-        st.table(df_keywords.set_index("순위"))
-
-        st.markdown("### 🧨 악성 첨부파일 확장자 카테고리 TOP3")
-
-        attachment_data = {
-            "순위": ["1위", "2위", "3위"],
-            "파일 유형": ["스크립트 파일", "압축파일", "문서"],
-            "비율": ["50%", "29%", "12%"],
-            "대표 확장자": [
-                "'.html', '.shtml', '.htm'",
-                "'.zip', '.rar', '.7z'",
-                "'.doc', '.xls', '.pdf'"
-            ]
-        }
-        df_attachments = pd.DataFrame(attachment_data)
-        st.table(df_attachments.set_index("순위"))
+        """메트릭 렌더링"""
+        metrics = [
+            ("총 메일 수", "1,234", "+12%"),
+            ("피싱 의심", "23", "-5%"),
+            ("스팸 감지", "156", "+8%"),
+            ("안전 메일", "1,055", "+15%")
+        ]
+        
+        cols = st.columns(4)
+        for col, (label, value, delta) in zip(cols, metrics):
+            with col:
+                st.metric(label, value, delta)
 
     @staticmethod
     def get_mail_full_content(message_id: str) -> Dict[str, Any]:

@@ -1,5 +1,5 @@
 """
-DeepMail - OpenAI 서비스 모듈 (최적화 리팩토링)
+DeepMail - OpenAI 서비스 모듈 (정리된 버전)
 """
 
 import streamlit as st
@@ -18,13 +18,13 @@ MODEL_PATH = os.path.join(os.path.dirname(__file__), '../models/rf_phishing_mode
 FUNCTION_SCHEMA = [
     {
         "name": "check_email_phishing",
-        "description": "선택한 번호의 Gmail 메일이 피싱인지 판별합니다. 사용자가 '1번 메일'이라고 하면 인덱스 0을, '2번 메일'이라고 하면 인덱스 1을 의미합니다.",
+        "description": "선택한 번호의 Gmail 메일이 피싱인지 판별합니다.",
         "parameters": {
             "type": "object",
             "properties": {
                 "index": {
                     "type": "integer",
-                    "description": "피싱 여부를 확인할 메일의 인덱스 (사용자 번호 - 1). 예: 사용자가 '1번 메일'이라고 하면 0, '2번 메일'이라고 하면 1"
+                    "description": "피싱 여부를 확인할 메일의 인덱스 (사용자 번호 - 1)"
                 }
             },
             "required": ["index"]
@@ -43,7 +43,7 @@ FUNCTION_SCHEMA = [
     },
     {
         "name": "delete_mails_by_indices",
-        "description": "선택한 번호의 Gmail 메일들을 휴지통으로 이동합니다. 사용자가 '1번 메일'이라고 하면 인덱스 0을, '2번 메일'이라고 하면 인덱스 1을 의미합니다.",
+        "description": "선택한 번호의 Gmail 메일들을 휴지통으로 이동합니다.",
         "parameters": {
             "type": "object",
             "properties": {
@@ -84,12 +84,34 @@ FUNCTION_SCHEMA = [
             },
             "required": ["index"]
         }
+    },
+    {
+        "name": "batch_web_search_analysis",
+        "description": "최근 n개 메일을 일괄적으로 웹서치로 피싱 분석합니다.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "n": {"type": "integer", "description": "분석할 메일 개수 (기본값: 5개)", "default": 5}
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "agent_analysis",
+        "description": "에이전트 스타일로 메일을 분석합니다 (웹서치 + 함수 호출 결합).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "index": {"type": "integer", "description": "분석할 메일의 인덱스 (사용자 번호 - 1)"}
+            },
+            "required": ["index"]
+        }
     }
 ]
 
 class OpenAIService:
     """
-    OpenAI 서비스 클래스 (최적화)
+    OpenAI 서비스 클래스 (정리된 버전)
     """
     def __init__(self):
         self.client = None
@@ -137,12 +159,169 @@ class OpenAIService:
         """메일 목록 새로고침 플래그 설정"""
         st.session_state['needs_refresh'] = True
 
+    # ===== 웹서치 기능 (통합) =====
+    
+    def web_search_analysis(self, email_index: int) -> str:
+        """
+        웹서치로 메일 분석 (통합된 메서드)
+        """
+        try:
+            print(f"🔍 [웹서치] {email_index + 1}번 메일 분석 시작...")
+            
+            messages = self.get_gmail_messages()
+            if not messages or email_index >= len(messages):
+                print(f"❌ [웹서치] {email_index + 1}번 메일이 존재하지 않음")
+                return "❌ 해당 번호의 메일이 없습니다."
+            
+            msg = messages[email_index]
+            subject = msg['subject']
+            snippet = msg['snippet']
+            
+            print(f"📧 [웹서치] 메일 정보 - 제목: {subject[:50]}...")
+            
+            prompt = f"""
+            다음 이메일이 피싱 메일인지 웹 검색을 통해 확인해주세요:
+            
+            제목: {subject}
+            내용: {snippet}
+            
+            피싱 여부, 위험도, 그리고 근거를 간단히 설명해주세요.
+            """
+            
+            print("🌐 [웹서치] OpenAI API 호출 중...")
+            response = self.client.responses.create(
+                model="gpt-4.1",
+                tools=[{"type": "web_search_preview"}],
+                input=prompt
+            )
+            
+            result = response.output_text
+            print(f"✅ [웹서치] 분석 완료! 결과 길이: {len(result)}자")
+            print(f"📝 [웹서치] 결과 미리보기: {result[:100]}...")
+            
+            return result
+            
+        except Exception as e:
+            print(f"💥 [웹서치] 오류 발생: {str(e)}")
+            return f"❌ 웹서치 분석 중 오류: {str(e)}"
+
+    def batch_web_search_analysis(self, n: int = 5) -> List[Dict[str, Any]]:
+        """
+        최근 n개 메일을 일괄 웹서치 분석
+        """
+        print(f"🚀 [웹서치] 최근 {n}개 메일 일괄 분석 시작...")
+        
+        messages = self.get_gmail_messages()
+        results = []
+        
+        for i, msg in enumerate(messages[:n]):
+            print(f"📧 [웹서치] {i+1}/{n}번째 메일 분석 중...")
+            
+            subject = msg.get('subject', '')
+            snippet = msg.get('snippet', '')
+            
+            print(f"   제목: {subject[:50]}...")
+            
+            prompt = (
+                f"아래는 이메일 제목과 내용입니다.\n"
+                f"제목: {subject}\n"
+                f"내용: {snippet}\n"
+                "이 메일이 피싱일 가능성이 있는지, 확률(0~1)과 판단 근거를 웹 검색을 활용해 알려줘."
+            )
+            
+            try:
+                print(f"   🌐 [웹서치] API 호출 중...")
+                response = self.client.responses.create(
+                    model="gpt-4.1",
+                    tools=[{"type": "web_search_preview"}],
+                    input=prompt
+                )
+                answer = response.output_text
+                print(f"   ✅ [웹서치] {i+1}번째 메일 분석 완료")
+                
+            except Exception as e:
+                print(f"   💥 [웹서치] {i+1}번째 메일 분석 실패: {str(e)}")
+                answer = f"분석 실패: {str(e)}"
+            
+            results.append({
+                "subject": subject,
+                "snippet": snippet,
+                "gpt_analysis": answer
+            })
+        
+        print(f"🎉 [웹서치] 전체 {len(results)}개 메일 분석 완료!")
+        return results
+
+    def agent_analysis(self, index: int) -> str:
+        """
+        에이전트 스타일 메일 분석 (웹서치 + 함수 호출)
+        """
+        print(f"🤖 [에이전트] {index + 1}번 메일 에이전트 분석 시작...")
+        
+        # 웹서치와 함수 호출을 분리해서 설정
+        tools = [{"type": "web_search_preview"}]
+        functions = FUNCTION_SCHEMA
+        
+        user_prompt = f"{index + 1}번 메일의 피싱 여부를 분석해줘."
+        messages = [{"role": "user", "content": user_prompt}]
+        
+        step_count = 0
+        while True:
+            step_count += 1
+            print(f"🔄 [에이전트] {step_count}번째 단계 실행 중...")
+            
+            try:
+                response = self.response.create(
+                    model="gpt-4.1",
+                    input=messages,
+                    tools=tools,
+                    functions=functions,
+                    tool_choice="auto",
+                    max_tokens=1000
+                )
+                response_message = response.output_text
+                
+                if response_message.tool_calls:
+                    print(f"🔧 [에이전트] {len(response_message.tool_calls)}개 도구 호출 감지")
+                    messages.append(response_message)
+                    
+                    for tool_call in response_message.tool_calls:
+                        function_name = tool_call.function.name
+                        print(f"   🛠️ [에이전트] 도구 실행: {function_name}")
+                        
+                        if function_name != "web_search":
+                            arguments = json.loads(tool_call.function.arguments)
+                            print(f"      📋 [에이전트] 인수: {arguments}")
+                            
+                            function_result = self.handle_function_call(function_name, arguments)
+                            print(f"      ✅ [에이전트] 함수 실행 완료")
+                            
+                            messages.append({
+                                "tool_call_id": tool_call.id,
+                                "role": "tool",
+                                "name": function_name,
+                                "content": json.dumps(function_result, ensure_ascii=False)
+                            })
+                        else:
+                            print(f"      🌐 [에이전트] 웹서치 도구 실행됨")
+                    
+                    print(f"🔄 [에이전트] 다음 단계로 진행...")
+                    continue
+                
+                final_content = response_message.output_text
+                print(f"🎉 [에이전트] 분석 완료! 최종 결과 길이: {len(final_content)}자")
+                return final_content
+                
+            except Exception as e:
+                print(f"💥 [에이전트] 오류 발생: {str(e)}")
+                return f"❌ 분석 중 오류가 발생했습니다: {str(e)}"
+        
+        return None
+
+    # ===== 기존 기능들 =====
+    
     def check_email_phishing(self, email_index: int) -> Dict[str, Any]:
-        """
-        n번째(0-indexed) 이메일의 피싱 여부를 반환합니다.
-        :param email_index: 확인할 이메일의 인덱스(0이 최신)
-        :return: {'subject': ..., 'sender': ..., 'result': 'phishing' or 'not phishing', 'probability': float}
-        """
+        """ML 모델 기반 피싱 검사"""
         try:
             print(f"[DEBUG] Step 1: 인증 및 메일 목록 가져오기")
             messages = self.get_gmail_messages()
@@ -356,7 +535,18 @@ class OpenAIService:
             elif function_name == "web_search_analysis":
                 index = arguments.get("index")
                 if index is not None:
-                    result = self.simple_web_search_analysis(index)
+                    result = self.web_search_analysis(index)
+                    return {"analysis": result}
+                else:
+                    return {"error": "index가 필요합니다."}
+            elif function_name == "batch_web_search_analysis":
+                n = arguments.get("n", 5)
+                results = self.batch_web_search_analysis(n)
+                return {"results": results, "message": f"{len(results)}개 메일 일괄 분석 완료"}
+            elif function_name == "agent_analysis":
+                index = arguments.get("index")
+                if index is not None:
+                    result = self.agent_analysis(index)
                     return {"analysis": result}
                 else:
                     return {"error": "index가 필요합니다."}
@@ -390,165 +580,6 @@ class OpenAIService:
             }
         else:
             return {"error": f"{index+1}번 메일이 존재하지 않습니다."}
-
-    def simple_web_search_analysis(self, email_index: int) -> str:
-        """
-        간단한 웹서치로 메일 분석 (학습한 방식 적용)
-        """
-        try:
-            print(f"🔍 [웹서치] {email_index + 1}번 메일 분석 시작...")
-            
-            messages = self.get_gmail_messages()
-            if not messages or email_index >= len(messages):
-                print(f"❌ [웹서치] {email_index + 1}번 메일이 존재하지 않음")
-                return "❌ 해당 번호의 메일이 없습니다."
-            
-            msg = messages[email_index]
-            subject = msg['subject']
-            snippet = msg['snippet']
-            
-            print(f"📧 [웹서치] 메일 정보 - 제목: {subject[:50]}...")
-            
-            prompt = f"""
-            다음 이메일이 피싱 메일인지 웹 검색을 통해 확인해주세요:
-            
-            제목: {subject}
-            내용: {snippet}
-            
-            피싱 여부, 위험도, 그리고 근거를 간단히 설명해주세요.
-            """
-            
-            print("🌐 [웹서치] OpenAI API 호출 중...")
-            response = self.client.responses.create(
-                model="gpt-4.1",
-                tools=[{"type": "web_search_preview"}],
-                input=prompt
-            )
-            
-            result = response.output_text
-            print(f"✅ [웹서치] 분석 완료! 결과 길이: {len(result)}자")
-            print(f"📝 [웹서치] 결과 미리보기: {result[:100]}...")
-            
-            return result
-            
-        except Exception as e:
-            print(f"💥 [웹서치] 오류 발생: {str(e)}")
-            return f"❌ 웹서치 분석 중 오류: {str(e)}"
-
-def analyze_recent_mails_with_websearch(n: int = 5) -> List[Dict[str, Any]]:
-    """
-    최근 n개 메일을 웹서치 기반으로 피싱 여부, 확률, 근거를 분석합니다.
-    반환값: [{subject, snippet, gpt_analysis} ...]
-    """
-    print(f"🚀 [웹서치] 최근 {n}개 메일 일괄 분석 시작...")
-    
-    client = OpenAI()
-    messages = st.session_state.get('gmail_messages', [])
-    results = []
-    
-    for i, msg in enumerate(messages[:n]):
-        print(f"📧 [웹서치] {i+1}/{n}번째 메일 분석 중...")
-        
-        subject = msg.get('subject', '')
-        snippet = msg.get('snippet', '')
-        
-        print(f"   제목: {subject[:50]}...")
-        
-        prompt = (
-            f"아래는 이메일 제목과 내용입니다.\n"
-            f"제목: {subject}\n"
-            f"내용: {snippet}\n"
-            "이 메일이 피싱일 가능성이 있는지, 확률(0~1)과 판단 근거를 웹 검색을 활용해 알려줘."
-        )
-        
-        try:
-            print(f"   🌐 [웹서치] API 호출 중...")
-            response = client.responses.create(
-                model="gpt-4.1",
-                tools=[{"type": "web_search_preview"}],
-                input=prompt
-            )
-            answer = response.output_text
-            print(f"   ✅ [웹서치] {i+1}번째 메일 분석 완료")
-            
-        except Exception as e:
-            print(f"   💥 [웹서치] {i+1}번째 메일 분석 실패: {str(e)}")
-            answer = f"분석 실패: {str(e)}"
-        
-        results.append({
-            "subject": subject,
-            "snippet": snippet,
-            "gpt_analysis": answer
-        })
-    
-    print(f"🎉 [웹서치] 전체 {len(results)}개 메일 분석 완료!")
-    return results
-
-def analyze_mail_with_agent(index: int) -> Union[str, None]:
-    """
-    OpenAI tool_calls(function calling + web_search)를 결합한 에이전트 스타일 메일 분석 함수.
-    """
-    print(f"🤖 [에이전트] {index + 1}번 메일 에이전트 분석 시작...")
-    
-    client = OpenAI()
-    
-    # 웹서치와 함수 호출을 분리해서 설정 (학습한 방식 적용)
-    tools = [{"type": "web_search_preview"}]
-    functions = FUNCTION_SCHEMA
-    
-    user_prompt = f"{index + 1}번 메일의 피싱 여부를 분석해줘."
-    messages = [{"role": "user", "content": user_prompt}]
-    
-    step_count = 0
-    while True:
-        step_count += 1
-        print(f"🔄 [에이전트] {step_count}번째 단계 실행 중...")
-        
-        try:
-            response = client.chat.completions.create(
-                model="gpt-4.1",
-                messages=messages,
-                tools=tools,
-                functions=functions,
-                tool_choice="auto"
-            )
-            response_message = response.choices[0].message
-            if response_message.tool_calls:
-                print(f"🔧 [에이전트] {len(response_message.tool_calls)}개 도구 호출 감지")
-                messages.append(response_message)
-                
-                for tool_call in response_message.tool_calls:
-                    function_name = tool_call.function.name
-                    print(f"   🛠️ [에이전트] 도구 실행: {function_name}")
-                    
-                    if function_name != "web_search":
-                        arguments = json.loads(tool_call.function.arguments)
-                        print(f"      📋 [에이전트] 인수: {arguments}")
-                        
-                        from deepmail.openai_service import openai_service
-                        function_result = openai_service.handle_function_call(function_name, arguments)
-                        print(f"      ✅ [에이전트] 함수 실행 완료")
-                        
-                        messages.append({
-                            "tool_call_id": tool_call.id,
-                            "role": "tool",
-                            "name": function_name,
-                            "content": json.dumps(function_result, ensure_ascii=False)
-                        })
-                    else:
-                        print(f"      🌐 [에이전트] 웹서치 도구 실행됨")
-                
-                print(f"🔄 [에이전트] 다음 단계로 진행...")
-                continue
-            
-            final_content = response_message.content
-            print(f"🎉 [에이전트] 분석 완료! 최종 결과 길이: {len(final_content)}자")
-            return final_content
-            
-        except Exception as e:
-            print(f"💥 [에이전트] 오류 발생: {str(e)}")
-            return f"❌ 분석 중 오류가 발생했습니다: {str(e)}"
-    return None
 
 # 전역 OpenAI 서비스 인스턴스
 openai_service = OpenAIService()
