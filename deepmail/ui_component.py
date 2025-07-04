@@ -25,24 +25,41 @@ CHAT_STYLES = """
     border: 1px solid #ddd;
     background-color: #f9f9f9;
 }
+/* 사용자 말풍선 (오른쪽) */
 .user-msg {
-    text-align: right;
-    background-color: #d0e7ff;
-    padding: 8px 12px;
-    border-radius: 15px;
-    margin-bottom: 8px;
-    display: inline-block;
-    max-width: 80%;
+    background: linear-gradient(135deg, #a0c4ff, #3b82f6);
+    color: white;
+    padding: 12px 20px;
+    border-radius: 24px 24px 0 24px;
+    margin-bottom: 12px;
+    max-width: 75%;
+    float: right;
+    clear: both;
+    box-shadow: 0 2px 6px rgba(59, 130, 246, 0.4);
+    transition: background-color 0.3s ease;
+    word-break: break-word;
 }
+
+/* 마우스 오버시 약간 밝아짐 */
+.user-msg:hover {
+    background: linear-gradient(135deg, #83b2ff, #2563eb);
+}
+
+/* 어시스턴트 말풍선 (왼쪽) */
 .assistant-msg {
-    text-align: left;
-    background-color: #e8e8e8;
-    padding: 8px 12px;
-    border-radius: 15px;
-    margin-bottom: 8px;
-    display: inline-block;
-    max-width: 80%;
+    background-color: #f3f4f6;
+    color: #1f2937;
+    padding: 12px 20px;
+    border-radius: 24px 24px 24px 0;
+    margin-bottom: 12px;
+    max-width: 75%;
+    float: left;
+    clear: both;
+    box-shadow: 0 2px 6px rgba(156, 163, 175, 0.3);
+    word-break: break-word;
 }
+
+
 .email-scroll-container {
     max-height: 800px;
     overflow-y: auto;
@@ -219,16 +236,49 @@ class UIComponents:
 
     @staticmethod
     def refresh_gmail_messages():
-        """Gmail 메시지 새로고침 (캐시 정리 포함)"""
-        UIComponents._clear_mail_cache()
-        messages = gmail_service.get_messages()
-        st.session_state.gmail_messages = messages
+        """Gmail 메시지 스마트 새로고침 (캐시 유지 + 새 메일만 추가)"""
+        # 현재 캐시된 메일 ID들 확인
+        cached_mail_ids = set()
+        for key in st.session_state.keys():
+            if key.startswith('mail_content_'):
+                mail_id = key.replace('mail_content_', '')
+                cached_mail_ids.add(mail_id)
+        
+        # Gmail에서 최신 메일 목록 가져오기
+        new_messages = gmail_service.get_messages()
+        
+        if new_messages:
+            # 새로 추가된 메일 ID들 찾기
+            new_mail_ids = {msg['id'] for msg in new_messages}
+            newly_added_ids = new_mail_ids - cached_mail_ids
+            
+            # 삭제된 메일 ID들 찾기 (캐시에는 있지만 Gmail에는 없는 경우)
+            deleted_mail_ids = cached_mail_ids - new_mail_ids
+            
+            # 삭제된 메일의 캐시 정리
+            for mail_id in deleted_mail_ids:
+                cache_key = f"mail_content_{mail_id}"
+                if cache_key in st.session_state:
+                    del st.session_state[cache_key]
+            
+            # 새로 추가된 메일이 있으면 알림
+            if newly_added_ids:
+                st.success(f"✅ {len(newly_added_ids)}개의 새 메일이 추가되었습니다!")
+            
+            # 삭제된 메일이 있으면 알림
+            if deleted_mail_ids:
+                st.info(f"📭 {len(deleted_mail_ids)}개의 메일이 삭제되었습니다.")
+        
+        # 메일 목록 업데이트
+        st.session_state.gmail_messages = new_messages
         st.session_state.gmail_last_fetch = datetime.now()
-        st.session_state.mail_page = 0
+        
+        # 삭제 추적 초기화 (실제 Gmail 상태와 동기화)
+        st.session_state.deleted_mail_ids = set()
 
     @staticmethod
     def _clear_mail_cache():
-        """메일 캐시 정리"""
+        """메일 캐시 정리 (전체 캐시 삭제)"""
         cache_keys_to_remove = [key for key in st.session_state.keys() if key.startswith('mail_content_')]
         for key in cache_keys_to_remove:
             del st.session_state[key]
@@ -478,95 +528,6 @@ class UIComponents:
         st.table(df_attachments.set_index("순위"))
 
     @staticmethod
-    def get_mail_full_content(message_id: str) -> Dict[str, Any]:
-        """메일의 전체 내용을 가져오는 함수 (재시도 로직 포함)"""
-        cache_key = f"mail_content_{message_id}"
-
-        if cache_key in st.session_state:
-            return st.session_state[cache_key]
-
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                # 재시도 시 더 긴 딜레이 (0.5~1.5초)
-                if attempt > 0:
-                    delay = random.uniform(0.5, 1.5) * (2 ** attempt)  # 지수 백오프
-                    time.sleep(delay)
-                else:
-                    time.sleep(random.uniform(0.2, 0.6))  # 첫 시도는 짧은 딜레이
-                
-                email_message = gmail_service.get_raw_message(message_id)
-                
-                if not email_message:
-                    return UIComponents._create_error_result(cache_key, "메일을 가져올 수 없습니다.")
-
-                result = UIComponents._parse_email_message(email_message)
-                st.session_state[cache_key] = result
-                return result
-
-            except HttpError as http_err:
-                if "429" in str(http_err) and attempt < max_retries - 1:
-                    st.warning(f"⚠️ 요청이 너무 많습니다. 잠시 후 재시도합니다... ({attempt + 1}/{max_retries})")
-                    continue
-                else:
-                    error_msg = UIComponents._handle_http_error(http_err)
-                    return UIComponents._create_error_result(cache_key, error_msg)
-            except Exception as e:
-                if attempt < max_retries - 1:
-                    st.warning(f"⚠️ 메일 로딩 중 오류가 발생했습니다. 재시도합니다... ({attempt + 1}/{max_retries})")
-                    continue
-                else:
-                    error_msg = f"❌ 메일 내용을 가져오는 중 오류가 발생했습니다: {str(e)}"
-                    return UIComponents._create_error_result(cache_key, error_msg)
-
-        return UIComponents._create_error_result(cache_key, "최대 재시도 횟수를 초과했습니다.")
-
-    @staticmethod
-    def _create_error_result(cache_key: str, error_msg: str) -> Dict[str, Any]:
-        """오류 결과 생성"""
-        result = {
-            'subject': '오류',
-            'from': '오류',
-            'to': '오류',
-            'date': '오류',
-            'body_text': error_msg,
-            'body_html': '',
-            'attachments': [],
-            'error': True
-        }
-        st.session_state[cache_key] = result
-        return result
-
-    @staticmethod
-    def _parse_email_message(email_message: Dict) -> Dict[str, Any]:
-        """이메일 메시지 파싱"""
-        subject = email_message.get('Subject', '제목 없음')
-        from_addr = email_message.get('From', '발신자 없음')
-        to_addr = email_message.get('To', '수신자 없음')
-        date = email_message.get('Date', '날짜 없음')
-
-        text_content, html_content = email_parser.extract_text_from_email(email_message)
-        attachments = email_parser.extract_attachments(email_message)
-
-        return {
-            'subject': subject,
-            'from': from_addr,
-            'to': to_addr,
-            'date': date,
-            'body_text': text_content,
-            'body_html': html_content,
-            'attachments': attachments,
-            'error': False
-        }
-
-    @staticmethod
-    def _handle_http_error(http_err: HttpError) -> str:
-        """HTTP 오류 처리"""
-        if http_err.resp.status == 429:
-            return "⚠️ 너무 많은 요청이 발생했습니다. 잠시 후 다시 시도해 주세요."
-        return f"❌ Gmail API 오류: {str(http_err)}"
-    
-    @staticmethod
     def render_mail_management():
         """메일 관리 섹션"""
         st.subheader("📧 메일 관리")
@@ -585,9 +546,142 @@ class UIComponents:
             st.info("📭 메일이 없습니다.")
             return
 
+        # 삭제된 메일 추적 (세션에 저장)
+        if 'deleted_mail_ids' not in st.session_state:
+            st.session_state.deleted_mail_ids = set()
+        
+        # 삭제된 메일 필터링
+        filtered_messages = [msg for msg in messages if msg['id'] not in st.session_state.deleted_mail_ids]
+        
         # 페이지네이션 및 메일 목록 렌더링
-        UIComponents._render_pagination(messages)
-        UIComponents._render_mail_list(messages)
+        UIComponents._render_pagination(filtered_messages)
+        UIComponents._render_mail_list(filtered_messages)
+
+    # AI 분석 블록 추가
+        st.markdown("---")
+        st.subheader("원하는 메일을 AI로 분석할 수 있습니다.")
+
+        mail_options = [
+            f"{i+1}번 메일: {msg['subject'][:40]}"
+            for i, msg in enumerate(messages)
+        ]
+        selected_idx = st.selectbox(
+            "분석할 메일을 선택하세요",
+            options=range(len(messages)),
+            format_func=lambda i: mail_options[i]
+        )
+        selected_msg = messages[selected_idx]
+
+        st.markdown("**분석 종류를 선택하세요**")
+        analysis_type = st.radio(
+            "분석 타입 선택",
+            ("피싱 위험 분석", "요약", "링크 위험도 웹서치 분석"),
+            horizontal=True,
+            index=0
+        )
+
+        if st.button("🔍 선택한 메일 AI 분석하기"):
+            with st.spinner("메일 전체 내용을 가져오는 중..."):
+                from mail_utils import get_mail_full_content
+                mail_content = get_mail_full_content(selected_msg['id'])
+            if mail_content['error']:
+                st.error("메일 본문이 없습니다.")
+            else:
+                if analysis_type == "피싱 위험 분석":
+                    prompt = "이 메일의 피싱 위험도를 평가하고. 그 이유도 설명해줘."
+                elif analysis_type == "요약":
+                    prompt = "이 메일의 주요 내용을 짧게 요약해줘."
+                elif analysis_type == "링크 위험도 웹서치 분석":
+                    prompt = "이 메일 본문에 포함된 링크나 도메인을 웹서치를 통해 위험도를 평가하고 설명해줘."
+                else:
+                    prompt = "이 메일을 분석해줘."
+
+                input_text = f"{prompt}\n\n[메일 제목]\n{mail_content['subject']}\n[본문]\n{mail_content['body_text'][:3000]}"
+                with st.spinner("메일을 분석 중..."):
+                    if analysis_type == "피싱 위험 분석":
+                        # 우리 프로젝트의 피싱 검사 함수 사용
+                        try:
+                            # 현재 메일의 인덱스 찾기
+                            messages = st.session_state.get('gmail_messages', [])
+                            mail_index = None
+                            for i, msg in enumerate(messages):
+                                if msg['id'] == selected_msg['id']:
+                                    mail_index = i
+                                    break
+                            
+                            if mail_index is not None:
+                                # check_email_phishing 함수 호출
+                                phishing_result = openai_service.check_email_phishing(mail_index)
+                                
+                                if 'error' in phishing_result:
+                                    result = f"❌ 피싱 검사 오류: {phishing_result['error']}"
+                                else:
+                                    # 결과를 친화적으로 포맷팅
+                                    risk_level = "🔴 높음" if phishing_result['result'] == 'phishing' else "🟢 낮음"
+                                    probability = phishing_result.get('probability', 0)
+                                    if probability:
+                                        probability_percent = f"{probability * 100:.1f}%"
+                                    else:
+                                        probability_percent = "확률 계산 불가"
+                                    
+                                    result = f"""
+**📊 피싱 위험도 분석 결과**
+
+**제목:** {phishing_result['subject']}
+**발신자:** {phishing_result['sender']}
+**위험도:** {risk_level}
+**피싱 확률:** {probability_percent}
+
+**분석 결과:** {phishing_result['result'] == 'phishing' and '이 메일은 피싱 메일로 판별되었습니다.' or '이 메일은 정상 메일로 판별되었습니다.'}
+
+**권장 조치:** {phishing_result['result'] == 'phishing' and '⚠️ 이 메일을 삭제하고 링크를 클릭하지 마세요.' or '✅ 안전한 메일입니다.'}
+"""
+                            else:
+                                result = "❌ 메일을 찾을 수 없습니다."
+                        except Exception as e:
+                            result = f"❌ 피싱 검사 중 오류가 발생했습니다: {str(e)}"
+                    elif analysis_type == "링크 위험도 웹서치 분석":
+                        # 웹서치를 통한 분석
+                        try:
+                            # 메일에서 링크나 도메인 추출
+                            import re
+                            links = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', mail_content['body_text'] or '')
+                            domains = re.findall(r'[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', mail_content['body_text'] or '')
+                            
+                            if links or domains:
+                                # 웹서치 분석 수행
+                                web_search_prompt = f"""
+다음 이메일의 링크와 도메인을 웹 검색을 통해 위험도를 평가해주세요:
+
+제목: {mail_content['subject']}
+발견된 링크: {links[:5]}  # 최대 5개
+발견된 도메인: {list(set(domains))[:5]}  # 중복 제거 후 최대 5개
+
+각 링크/도메인의 위험도, 악성 여부, 그리고 근거를 웹 검색을 통해 분석해주세요.
+"""
+                                result = openai_service.web_search_analysis_with_prompt(web_search_prompt)
+                            else:
+                                result = "이 메일에서 링크나 도메인을 찾을 수 없습니다."
+                        except Exception as e:
+                            result = f"웹서치 분석 중 오류가 발생했습니다: {str(e)}"
+                    else:
+                        # 일반 챗봇 분석 (요약 등)
+                        result = openai_service.chat_with_function_call(input_text)
+                st.success(f"**분석 결과:**\n\n{result}")
+                
+                # 대화창 연동
+                st.session_state.messages.append({
+                    "role":"user",
+                    "content": f"[{mail_content['subject']}] {analysis_type}"    
+                })
+                st.session_state.messages.append({
+                    "role":"assistant",
+                    "content": result
+                })
+
+
+
+    
 
     @staticmethod
     def _render_pagination(messages: List[Dict]):
@@ -595,12 +689,18 @@ class UIComponents:
         total_messages = len(messages)
         total_pages = (total_messages + st.session_state.mail_page_size - 1) // st.session_state.mail_page_size
         
+        # 페이지 번호 자동 조정 (현재 페이지가 총 페이지 수를 초과하는 경우)
+        if total_pages > 0 and st.session_state.mail_page >= total_pages:
+            st.session_state.mail_page = total_pages - 1
+        
         cols = st.columns([2, 2, 1, 1, 1, 1, 1, 3])
 
         with cols[0]:
-            if st.button("🔄 새로고침"):
+            if st.button("🔄 스마트 새로고침"):
                 with st.spinner("메일 목록을 새로고침하는 중..."):
                     UIComponents.refresh_gmail_messages()
+                    # 삭제된 메일 추적 초기화
+                    st.session_state.deleted_mail_ids = set()
                     st.rerun()
 
         # 페이지네이션 버튼들
@@ -637,10 +737,34 @@ class UIComponents:
         cache_key = f"mail_content_{msg['id']}"
         is_cached = cache_key in st.session_state
         
+        # 삭제된 메일인지 확인
+        if msg['id'] in st.session_state.get('deleted_mail_ids', set()):
+            return  # 삭제된 메일은 렌더링하지 않음
+        
         with st.expander(f"📧 [{global_idx + 1}] {msg['subject']}", expanded=False):
             # 기본 정보 표시
             st.write(f"**📧 발신자:** {msg['sender']}")
             st.write(f"**📄 내용:** {msg['snippet']}")
+            
+            # 삭제 버튼 추가
+            col1, col2 = st.columns([3, 1])
+            with col2:
+                if st.button("🗑️ 삭제", key=f"delete_{msg['id']}"):
+                    # 메일 삭제 처리
+                    success = gmail_service.move_to_trash(msg['id'])
+                    if success:
+                        # 삭제된 메일 ID를 세션에 추가
+                        if 'deleted_mail_ids' not in st.session_state:
+                            st.session_state.deleted_mail_ids = set()
+                        st.session_state.deleted_mail_ids.add(msg['id'])
+                        # 해당 메일의 캐시도 제거
+                        if cache_key in st.session_state:
+                            del st.session_state[cache_key]
+                        st.success("✅ 메일이 삭제되었습니다!")
+                        # 즉시 페이지 다시 렌더링
+                        st.rerun()
+                    else:
+                        st.error("❌ 메일 삭제에 실패했습니다.")
             
             # 캐시 상태 표시
             if is_cached:
@@ -649,7 +773,8 @@ class UIComponents:
             # 메일 전체 내용 로드
             if not is_cached:
                 with st.spinner("메일 내용을 불러오는 중..."):
-                    full_content = UIComponents.get_mail_full_content(msg['id'])
+                    from mail_utils import get_mail_full_content
+                    full_content = get_mail_full_content(msg['id'])
             else:
                 full_content = st.session_state[cache_key]
             

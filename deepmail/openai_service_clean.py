@@ -10,6 +10,7 @@ from openai import OpenAI
 from config import OPENAI_CONFIG
 from gmail_service import gmail_service, email_parser
 from typing import List, Dict, Any, Optional, Union
+from mail_utils import get_mail_full_content
 
 # 모델 경로 정의
 MODEL_PATH = os.path.join(os.path.dirname(__file__), '../models/rf_phishing_model.pkl')
@@ -18,13 +19,13 @@ MODEL_PATH = os.path.join(os.path.dirname(__file__), '../models/rf_phishing_mode
 FUNCTION_SCHEMA = [
     {
         "name": "check_email_phishing",
-        "description": "선택한 번호의 Gmail 메일이 피싱인지 판별합니다.",
+        "description": "선택한 번호의 Gmail 메일이 피싱인지 판별합니다. 사용자가 '8번 메일'이라고 하면 인덱스 7을 의미합니다.",
         "parameters": {
             "type": "object",
             "properties": {
                 "index": {
                     "type": "integer",
-                    "description": "피싱 여부를 확인할 메일의 인덱스 (사용자 번호 - 1)"
+                    "description": "피싱 여부를 확인할 메일의 인덱스 (사용자 번호 - 1). 예: 사용자가 '8번 메일'이라고 하면 7"
                 }
             },
             "required": ["index"]
@@ -43,44 +44,44 @@ FUNCTION_SCHEMA = [
     },
     {
         "name": "delete_mails_by_indices",
-        "description": "선택한 번호의 Gmail 메일들을 휴지통으로 이동합니다.",
+        "description": "선택한 번호의 Gmail 메일들을 휴지통으로 이동합니다. 사용자가 '8번 메일 삭제해줘'라고 하면 인덱스 7을, '2번, 3번 메일 삭제해줘'라고 하면 인덱스 1, 2를 의미합니다. 삭제 후 UI에서 즉시 사라집니다.",
         "parameters": {
             "type": "object",
             "properties": {
-                "indices": {"type": "array", "items": {"type": "integer"}, "description": "삭제할 메일의 인덱스 (사용자 번호 - 1)"}
+                "indices": {"type": "array", "items": {"type": "integer"}, "description": "삭제할 메일의 인덱스 (사용자 번호 - 1). 예: 사용자가 '8번 메일'이라고 하면 7, '1번 메일'이라고 하면 0"}
             },
             "required": ["indices"]
         },
     },
     {
         "name": "summarize_mails_by_indices",
-        "description": "선택한 번호의 Gmail 메일들을 OpenAI GPT로 요약합니다.",
+        "description": "선택한 번호의 Gmail 메일들을 OpenAI GPT로 요약합니다. 사용자가 '8번 메일'이라고 하면 인덱스 7을 의미합니다.",
         "parameters": {
             "type": "object",
             "properties": {
-                "indices": {"type": "array", "items": {"type": "integer"}, "description": "요약할 메일의 인덱스 (사용자 번호 - 1)"}
+                "indices": {"type": "array", "items": {"type": "integer"}, "description": "요약할 메일의 인덱스 (사용자 번호 - 1). 예: 사용자가 '8번 메일'이라고 하면 7"}
             },
             "required": ["indices"]
         }
     },
     {
         "name": "get_mail_content",
-        "description": "번호로 Gmail 메일의 제목, 발신자, 내용을 반환합니다.",
+        "description": "번호로 Gmail 메일의 제목, 발신자, 내용을 반환합니다. 사용자가 '8번 메일'이라고 하면 인덱스 7을 의미합니다.",
         "parameters": {
             "type": "object",
             "properties": {
-                "index": {"type": "integer", "description": "메일 인덱스 (사용자 번호 - 1)"}
+                "index": {"type": "integer", "description": "메일 인덱스 (사용자 번호 - 1). 예: 사용자가 '8번 메일'이라고 하면 7"}
             },
             "required": ["index"]
         }
     },
     {
         "name": "web_search_analysis",
-        "description": "웹서치를 통해 메일의 피싱 여부를 분석합니다.",
+        "description": "웹서치를 통해 메일의 피싱 여부를 분석합니다. 사용자가 '8번 메일'이라고 하면 인덱스 7을 의미합니다.",
         "parameters": {
             "type": "object",
             "properties": {
-                "index": {"type": "integer", "description": "분석할 메일의 인덱스 (사용자 번호 - 1)"}
+                "index": {"type": "integer", "description": "분석할 메일의 인덱스 (사용자 번호 - 1). 예: 사용자가 '8번 메일'이라고 하면 7"}
             },
             "required": ["index"]
         }
@@ -98,13 +99,25 @@ FUNCTION_SCHEMA = [
     },
     {
         "name": "agent_analysis",
-        "description": "에이전트 스타일로 메일을 분석합니다 (웹서치 + 함수 호출 결합).",
+        "description": "에이전트 스타일로 메일을 분석합니다 (웹서치 + 함수 호출 결합). 사용자가 '8번 메일'이라고 하면 인덱스 7을 의미합니다.",
         "parameters": {
             "type": "object",
             "properties": {
-                "index": {"type": "integer", "description": "분석할 메일의 인덱스 (사용자 번호 - 1)"}
+                "index": {"type": "integer", "description": "분석할 메일의 인덱스 (사용자 번호 - 1). 예: 사용자가 '8번 메일'이라고 하면 7"}
             },
             "required": ["index"]
+        }
+    },
+    {
+        "name": "search_mails",
+        "description": "메일 제목, 발신자, 내용에서 키워드를 검색하여 관련 메일들을 찾습니다.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "검색할 키워드"},
+                "max_results": {"type": "integer", "description": "최대 검색 결과 수", "default": 10}
+            },
+            "required": ["query"]
         }
     }
 ]
@@ -195,6 +208,31 @@ class OpenAIService:
                 model="gpt-4.1",
                 tools=[{"type": "web_search_preview"}],
                 input=prompt
+            )
+            
+            result = response.output_text
+            print(f"✅ [웹서치] 분석 완료! 결과 길이: {len(result)}자")
+            print(f"📝 [웹서치] 결과 미리보기: {result[:100]}...")
+            
+            return result
+            
+        except Exception as e:
+            print(f"💥 [웹서치] 오류 발생: {str(e)}")
+            return f"❌ 웹서치 분석 중 오류: {str(e)}"
+
+    def web_search_analysis_with_prompt(self, custom_prompt: str) -> str:
+        """
+        커스텀 프롬프트로 웹서치 분석
+        """
+        try:
+            print(f"🔍 [웹서치] 커스텀 프롬프트 분석 시작...")
+            print(f"📝 [웹서치] 프롬프트 미리보기: {custom_prompt[:100]}...")
+            
+            print("🌐 [웹서치] OpenAI API 호출 중...")
+            response = self.client.responses.create(
+                model="gpt-4.1",
+                tools=[{"type": "web_search_preview"}],
+                input=custom_prompt
             )
             
             result = response.output_text
@@ -378,7 +416,7 @@ class OpenAIService:
             return {'error': f'[EXCEPTION] {str(e)}', 'traceback': tb}
 
     def summarize_mails(self, indices: List[int], model: Optional[str]=None, temperature: Optional[float]=None) -> str:
-        """메일 요약 (캐시 우선 사용)"""
+        """메일 요약 (전체 내용 기반)"""
         if not self.client:
             return "❌ OpenAI API 키가 설정되지 않았습니다."
         model = model or OPENAI_CONFIG['model']
@@ -389,25 +427,16 @@ class OpenAIService:
         for idx in indices:
             if 0 <= idx < len(messages):
                 msg = messages[idx]
-                
-                # 캐시된 메일 내용 우선 확인
-                cache_key = f"mail_content_{msg['id']}"
-                content_text = msg['snippet']  # 기본값
-                
-                if cache_key in st.session_state:
-                    # 캐시된 내용 사용
-                    full_content = st.session_state[cache_key]
-                    if not full_content['error']:
-                        if full_content['body_text']:
-                            content_text = full_content['body_text']
-                        elif full_content['body_html']:
-                            content_text = email_parser.extract_text_from_html(full_content['body_html'])
-                        else:
-                            content_text = msg['snippet']
-                else:
-                    # 캐시에 없으면 기본 정보만 사용 (API 요청 없이)
+                full_content = get_mail_full_content(msg['id'])
+                if full_content['error']:
                     content_text = msg['snippet']
-                
+                else:
+                    if full_content['body_text']:
+                        content_text = full_content['body_text']
+                    elif full_content['body_html']:
+                        content_text = email_parser.extract_text_from_html(full_content['body_html'])
+                    else:
+                        content_text = msg['snippet']
                 prompt = f"""다음 이메일을 요약해줘.\n\n제목: {msg['subject']}\n발신자: {msg['sender']}\n내용: {content_text[:2000]}"""
                 try:
                     response = self.call_openai_chat(
@@ -514,22 +543,36 @@ class OpenAIService:
                     return {"success": False, "error": "message_id가 필요합니다."}
             elif function_name == "delete_mails_by_indices":
                 indices = arguments.get("indices", [])
+                print(f"[DEBUG] 삭제 요청된 인덱스: {indices}")
                 if indices:
                     messages = self.get_gmail_messages()
                     if not messages:
                         return {"success": False, "error": "메일 목록이 없습니다."}
+                    
                     valid_indices = [idx for idx in indices if 0 <= idx < len(messages)]
-                    invalid_indices = [idx + 1 for idx in indices if not (0 <= idx < len(messages))]
+                    invalid_indices = [idx for idx in indices if not (0 <= idx < len(messages))]
+                    
+                    print(f"[DEBUG] 유효한 인덱스: {valid_indices}, 유효하지 않은 번호: {invalid_indices}")
+                    
                     if not valid_indices:
                         return {"success": False, "error": f"유효하지 않은 메일 번호: {invalid_indices}"}
+                    
                     results = self.delete_mails_by_indices(valid_indices)
                     success_count = sum(1 for r in results if r.get("success", False))
-                    message = f"{success_count}개 메일 삭제 완료"
+                    
+                    # 성공적으로 삭제된 메일들의 제목 목록
+                    deleted_subjects = [r.get("subject", "") for r in results if r.get("success", False)]
+                    
+                    message = f"✅ {success_count}개 메일이 성공적으로 삭제되었습니다!"
+                    if deleted_subjects:
+                        message += f"\n\n삭제된 메일:\n" + "\n".join([f"• {subject}" for subject in deleted_subjects])
+                    
                     if invalid_indices:
-                        message += f" (유효하지 않은 번호: {invalid_indices})"
-                    return {"results": results, "message": message}
+                        message += f"\n\n⚠️ 유효하지 않은 번호: {invalid_indices}번"
+                    
+                    return {"results": results, "message": message, "success": True}
                 else:
-                    return {"success": False, "error": "indices가 필요합니다."}
+                    return {"success": False, "error": "삭제할 메일 번호를 지정해주세요."}
             elif function_name == "summarize_mails_by_indices":
                 indices = arguments.get("indices", [])
                 if indices:
@@ -562,22 +605,50 @@ class OpenAIService:
                     return {"analysis": result}
                 else:
                     return {"error": "index가 필요합니다."}
+            elif function_name == "search_mails":
+                query = arguments.get("query")
+                max_results = arguments.get("max_results", 10)
+                if query:
+                    return {"results": self.search_mails(query, max_results)}
+                else:
+                    return {"error": "query가 필요합니다."}
             else:
                 return {"error": f"알 수 없는 함수: {function_name}"}
         except Exception as e:
             return {"error": f"함수 실행 중 오류: {str(e)}"}
 
     def delete_mails_by_indices(self, indices: List[int]) -> List[Dict[str, Any]]:
-        """번호(인덱스) 리스트로 여러 메일을 휴지통으로 이동"""
+        """번호(인덱스) 리스트로 여러 메일을 휴지통으로 이동하고 UI 업데이트"""
         results = []
         messages = self.get_gmail_messages()
+        
+        # 삭제된 메일 ID들을 추적하기 위한 세션 상태 초기화
+        if 'deleted_mail_ids' not in st.session_state:
+            st.session_state.deleted_mail_ids = set()
+        
         for idx in indices:
             if 0 <= idx < len(messages):
                 msg_id = messages[idx]['id']
                 result = gmail_service.move_to_trash(msg_id)
-                results.append({"index": idx, "success": result})
+                
+                if result:
+                    # 성공적으로 삭제된 경우 UI에서 즉시 사라지도록 세션에 추가
+                    st.session_state.deleted_mail_ids.add(msg_id)
+                    
+                    # 해당 메일의 캐시도 제거
+                    cache_key = f"mail_content_{msg_id}"
+                    if cache_key in st.session_state:
+                        del st.session_state[cache_key]
+                
+                results.append({
+                    "index": idx, 
+                    "success": result, 
+                    "message_id": msg_id,
+                    "subject": messages[idx]['subject']
+                })
             else:
                 results.append({"index": idx, "success": False, "error": "존재하지 않는 번호"})
+        
         return results
 
     def get_mail_content(self, index: int) -> Dict[str, Any]:
@@ -592,6 +663,57 @@ class OpenAIService:
             }
         else:
             return {"error": f"{index+1}번 메일이 존재하지 않습니다."}
+
+    def search_mails(self, query: str, max_results: int = 10) -> list:
+        """제목, 발신자, 본문(snippet)에서 키워드로 검색하고 스니펫 기반 요약 생성"""
+        messages = self.get_gmail_messages()
+        results = []
+        query_lower = query.lower()
+        
+        # 검색 결과 수집
+        search_results = []
+        for idx, msg in enumerate(messages):
+            if (query_lower in msg.get('subject', '').lower() or
+                query_lower in msg.get('sender', '').lower() or
+                query_lower in msg.get('snippet', '').lower()):
+                search_results.append({
+                    "index": idx,
+                    "mail_number": idx + 1,  # 사용자 번호 (1부터 시작)
+                    "subject": msg.get('subject', ''),
+                    "sender": msg.get('sender', ''),
+                    "snippet": msg.get('snippet', '')
+                })
+            if len(search_results) >= max_results:
+                break
+        
+        # 각 검색 결과에 대해 개별 요약 생성
+        for result in search_results:
+            if self.client:
+                try:
+                    # 개별 메일 요약 생성 (메일 번호 포함)
+                    summary_prompt = f"""다음 {result['mail_number']}번 메일을 간단히 요약해주세요:
+
+제목: {result['subject']}
+발신자: {result['sender']}
+내용: {result['snippet'][:300]}
+
+1-2문장으로 핵심 내용을 요약해주세요."""
+
+                    response = self.call_openai_chat(
+                        messages=[{"role": "user", "content": summary_prompt}],
+                        temperature=0.3
+                    )
+                    summary = response.choices[0].message.content.strip()
+                    result["summary"] = summary
+                except Exception as e:
+                    result["summary"] = f"요약 실패: {str(e)}"
+            else:
+                result["summary"] = "요약을 생성할 수 없습니다."
+            
+            result["snippet_preview"] = result["snippet"][:100]
+            results.append(result)
+        
+        return results
 
 # 전역 OpenAI 서비스 인스턴스
 openai_service = OpenAIService()
