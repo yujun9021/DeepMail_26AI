@@ -190,7 +190,6 @@ class UIComponents:
                 st.session_state.gmail_credentials = creds
                 st.session_state.gmail_authenticated = True
                 st.success("✅ Gmail 로그인 성공!")
-                UIComponents.refresh_gmail_messages()
                 UIComponents.rerun()
             else:
                 st.error("❌ Gmail 로그인 실패")
@@ -385,11 +384,11 @@ class UIComponents:
         ))
 
         fig.update_layout(
-            height=400
-            # margin=dict(l=20, r=20, t=130, b=10)
+            height=250,
+            margin=dict(l=20, r=20, t=60, b=20)
         )
 
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, use_container_width=True,key=f"gauge_chart_{random.randint(0, 100000)}")
 
     @staticmethod
     def render_phishing_dashboard(model_dict=None, messages=None):

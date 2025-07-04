@@ -2,6 +2,8 @@
 import streamlit as st
 from ui_component import UIComponents
 from config import PAGE_CONFIG
+import joblib
+import os
 
 def main():
     UIComponents.initialize_session_state()
@@ -10,8 +12,17 @@ def main():
 
     UIComponents.render_sidebar()
     
+    # 모델 로드
+    model_dict = None
+    model_path = os.path.join(os.path.dirname(__file__), '../models/rf_phishing_model.pkl')
+    if os.path.exists(model_path):
+        model_dict = joblib.load(model_path)
+
+    # 메일 데이터 준비
+    messages = st.session_state.get('gmail_messages', [])
+
     # 위쪽 섹션: 피싱/스팸 메일 대시보드
-    UIComponents.render_phishing_dashboard()
+    UIComponents.render_phishing_dashboard(model_dict=model_dict, messages=messages)
     
     # 수평선으로 구분
     st.markdown("---")

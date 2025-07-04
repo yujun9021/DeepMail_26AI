@@ -25,7 +25,7 @@ PAGE_CONFIG = {
 MAIL_CONFIG = {
     'max_results': 50,
     'default_page_size': 10,
-    'page_size_options': [5, 10, 15, 20]
+    'page_size_options': [10, 15, 20, 25, 30]
 }
 
 # OpenAI 설정
