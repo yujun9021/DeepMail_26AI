@@ -23,8 +23,8 @@ PAGE_CONFIG = {
 
 # 메일 설정
 MAIL_CONFIG = {
-    'max_results': 30,
-    'default_page_size': 5,
+    'max_results': 50,
+    'default_page_size': 10,
     'page_size_options': [5, 10, 15, 20]
 }
 
