@@ -12,6 +12,7 @@ from gmail_service import gmail_service, email_parser
 from typing import List, Dict, Any, Optional, Union
 from mail_utils import get_mail_full_content
 
+
 # 모델 경로 정의
 MODEL_PATH = os.path.join(os.path.dirname(__file__), '../models/rf_phishing_model.pkl')
 
@@ -75,39 +76,7 @@ FUNCTION_SCHEMA = [
             "required": ["index"]
         }
     },
-    {
-        "name": "web_search_analysis",
-        "description": "웹서치를 통해 메일의 피싱 여부를 분석합니다. 사용자가 '8번 메일'이라고 하면 인덱스 7을 의미합니다.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "index": {"type": "integer", "description": "분석할 메일의 인덱스 (사용자 번호 - 1). 예: 사용자가 '8번 메일'이라고 하면 7"}
-            },
-            "required": ["index"]
-        }
-    },
-    {
-        "name": "batch_web_search_analysis",
-        "description": "최근 n개 메일을 일괄적으로 웹서치로 피싱 분석합니다.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "n": {"type": "integer", "description": "분석할 메일 개수 (기본값: 5개)", "default": 5}
-            },
-            "required": []
-        }
-    },
-    {
-        "name": "agent_analysis",
-        "description": "에이전트 스타일로 메일을 분석합니다 (웹서치 + 함수 호출 결합). 사용자가 '8번 메일'이라고 하면 인덱스 7을 의미합니다.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "index": {"type": "integer", "description": "분석할 메일의 인덱스 (사용자 번호 - 1). 예: 사용자가 '8번 메일'이라고 하면 7"}
-            },
-            "required": ["index"]
-        }
-    },
+
     {
         "name": "search_mails",
         "description": "메일 제목, 발신자, 내용에서 키워드를 검색하여 관련 메일들을 찾습니다.",
@@ -118,6 +87,63 @@ FUNCTION_SCHEMA = [
                 "max_results": {"type": "integer", "description": "최대 검색 결과 수", "default": 10}
             },
             "required": ["query"]
+        }
+    },
+    {
+        "name": "batch_phishing_delete",
+        "description": "최근 메일들을 일괄적으로 피싱 검사하고, 피싱으로 판별된 메일들을 자동으로 삭제합니다.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "max_mails": {"type": "integer", "description": "검사할 최대 메일 개수 (기본값: 50)", "default": 50},
+                "threshold": {"type": "number", "description": "피싱 판별 임계값 (0.0~1.0, 기본값: 0.7)", "default": 0.7}
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "get_mail_statistics",
+        "description": "Gmail 메일들의 상세한 통계 정보를 분석하여 제공합니다.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "max_mails": {"type": "integer", "description": "분석할 최대 메일 개수 (기본값: 100)", "default": 100}
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "analyze_link_risk",
+        "description": "메일의 링크와 도메인을 웹서치를 통해 위험도를 분석합니다. 사용자가 '8번 메일'이라고 하면 인덱스 7을 의미합니다.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "index": {"type": "integer", "description": "분석할 메일의 인덱스 (사용자 번호 - 1). 예: 사용자가 '8번 메일'이라고 하면 7"}
+            },
+            "required": ["index"]
+        }
+    },
+    {
+        "name": "batch_analyze_link_risk",
+        "description": "최근 n개 메일의 링크와 도메인을 일괄적으로 웹서치로 위험도 분석합니다.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "n": {"type": "integer", "description": "분석할 메일 개수 (기본값: 5개)", "default": 5}
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "web_search_mail_content",
+        "description": "메일의 전체 내용을 웹서치를 통해 자유롭게 분석합니다. 사용자가 '8번 메일'이라고 하면 인덱스 7을 의미합니다.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "index": {"type": "integer", "description": "분석할 메일의 인덱스 (사용자 번호 - 1). 예: 사용자가 '8번 메일'이라고 하면 7"},
+                "search_query": {"type": "string", "description": "특정 검색할 내용 (선택사항). 비워두면 메일 전체 내용을 분석합니다.", "default": ""}
+            },
+            "required": ["index"]
         }
     }
 ]
@@ -174,55 +200,11 @@ class OpenAIService:
         # st.session_state['needs_refresh'] = True
         pass
 
-    # ===== 웹서치 기능 (통합) =====
+    # ===== 웹서치 기능 (핵심) =====
     
-    def web_search_analysis(self, email_index: int) -> str:
-        """
-        웹서치로 메일 분석 (통합된 메서드)
-        """
-        try:
-            print(f"🔍 [웹서치] {email_index + 1}번 메일 분석 시작...")
-            
-            messages = self.get_gmail_messages()
-            if not messages or email_index >= len(messages):
-                print(f"❌ [웹서치] {email_index + 1}번 메일이 존재하지 않음")
-                return "❌ 해당 번호의 메일이 없습니다."
-            
-            msg = messages[email_index]
-            subject = msg['subject']
-            snippet = msg['snippet']
-            
-            print(f"📧 [웹서치] 메일 정보 - 제목: {subject[:50]}...")
-            
-            prompt = f"""
-            다음 이메일이 피싱 메일인지 웹 검색을 통해 확인해주세요:
-            
-            제목: {subject}
-            내용: {snippet}
-            
-            피싱 여부, 위험도, 그리고 근거를 간단히 설명해주세요.
-            """
-            
-            print("🌐 [웹서치] OpenAI API 호출 중...")
-            response = self.client.responses.create(
-                model="gpt-4.1",
-                tools=[{"type": "web_search_preview"}],
-                input=prompt
-            )
-            
-            result = response.output_text
-            print(f"✅ [웹서치] 분석 완료! 결과 길이: {len(result)}자")
-            print(f"📝 [웹서치] 결과 미리보기: {result[:100]}...")
-            
-            return result
-            
-        except Exception as e:
-            print(f"💥 [웹서치] 오류 발생: {str(e)}")
-            return f"❌ 웹서치 분석 중 오류: {str(e)}"
-
     def web_search_analysis_with_prompt(self, custom_prompt: str) -> str:
         """
-        커스텀 프롬프트로 웹서치 분석
+        커스텀 프롬프트로 웹서치 분석 (핵심 기능)
         """
         try:
             print(f"🔍 [웹서치] 커스텀 프롬프트 분석 시작...")
@@ -244,119 +226,6 @@ class OpenAIService:
         except Exception as e:
             print(f"💥 [웹서치] 오류 발생: {str(e)}")
             return f"❌ 웹서치 분석 중 오류: {str(e)}"
-
-    def batch_web_search_analysis(self, n: int = 5) -> List[Dict[str, Any]]:
-        """
-        최근 n개 메일을 일괄 웹서치 분석
-        """
-        print(f"🚀 [웹서치] 최근 {n}개 메일 일괄 분석 시작...")
-        
-        messages = self.get_gmail_messages()
-        results = []
-        
-        for i, msg in enumerate(messages[:n]):
-            print(f"📧 [웹서치] {i+1}/{n}번째 메일 분석 중...")
-            
-            subject = msg.get('subject', '')
-            snippet = msg.get('snippet', '')
-            
-            print(f"   제목: {subject[:50]}...")
-            
-            prompt = (
-                f"아래는 이메일 제목과 내용입니다.\n"
-                f"제목: {subject}\n"
-                f"내용: {snippet}\n"
-                "이 메일이 피싱일 가능성이 있는지, 확률(0~1)과 판단 근거를 웹 검색을 활용해 알려줘."
-            )
-            
-            try:
-                print(f"   🌐 [웹서치] API 호출 중...")
-                response = self.client.responses.create(
-                    model="gpt-4.1",
-                    tools=[{"type": "web_search_preview"}],
-                    input=prompt
-                )
-                answer = response.output_text
-                print(f"   ✅ [웹서치] {i+1}번째 메일 분석 완료")
-                
-            except Exception as e:
-                print(f"   💥 [웹서치] {i+1}번째 메일 분석 실패: {str(e)}")
-                answer = f"분석 실패: {str(e)}"
-            
-            results.append({
-                "subject": subject,
-                "snippet": snippet,
-                "gpt_analysis": answer
-            })
-        
-        print(f"🎉 [웹서치] 전체 {len(results)}개 메일 분석 완료!")
-        return results
-
-    def agent_analysis(self, index: int) -> str:
-        """
-        에이전트 스타일 메일 분석 (웹서치 + 함수 호출)
-        """
-        print(f"🤖 [에이전트] {index + 1}번 메일 에이전트 분석 시작...")
-        
-        # 웹서치와 함수 호출을 분리해서 설정
-        tools = [{"type": "web_search_preview"}]
-        functions = FUNCTION_SCHEMA
-        
-        user_prompt = f"{index + 1}번 메일의 피싱 여부를 분석해줘."
-        messages = [{"role": "user", "content": user_prompt}]
-        
-        step_count = 0
-        while True:
-            step_count += 1
-            print(f"🔄 [에이전트] {step_count}번째 단계 실행 중...")
-            
-            try:
-                response = self.response.create(
-                    model="gpt-4.1",
-                    input=messages,
-                    tools=tools,
-                    functions=functions,
-                    tool_choice="auto",
-                    max_tokens=1000
-                )
-                response_message = response.output_text
-                
-                if response_message.tool_calls:
-                    print(f"🔧 [에이전트] {len(response_message.tool_calls)}개 도구 호출 감지")
-                    messages.append(response_message)
-                    
-                    for tool_call in response_message.tool_calls:
-                        function_name = tool_call.function.name
-                        print(f"   🛠️ [에이전트] 도구 실행: {function_name}")
-                        
-                        if function_name != "web_search":
-                            arguments = json.loads(tool_call.function.arguments)
-                            print(f"      📋 [에이전트] 인수: {arguments}")
-                            
-                            function_result = self.handle_function_call(function_name, arguments)
-                            print(f"      ✅ [에이전트] 함수 실행 완료")
-                            
-                            messages.append({
-                                "tool_call_id": tool_call.id,
-                                "role": "tool",
-                                "name": function_name,
-                                "content": json.dumps(function_result, ensure_ascii=False)
-                            })
-                        else:
-                            print(f"      🌐 [에이전트] 웹서치 도구 실행됨")
-                    
-                    print(f"🔄 [에이전트] 다음 단계로 진행...")
-                    continue
-                
-                final_content = response_message.output_text
-                print(f"🎉 [에이전트] 분석 완료! 최종 결과 길이: {len(final_content)}자")
-                return final_content
-                
-            except Exception as e:
-                print(f"💥 [에이전트] 오류 발생: {str(e)}")
-                return f"❌ 분석 중 오류가 발생했습니다: {str(e)}"
-        
-        return None
 
     # ===== 기존 기능들 =====
     
@@ -414,6 +283,200 @@ class OpenAIService:
             tb = traceback.format_exc()
             print(f"[ERROR] 예외 발생: {e}\n{tb}")
             return {'error': f'[EXCEPTION] {str(e)}', 'traceback': tb}
+
+    def batch_check_phishing_and_delete(self, max_mails: int = 50, threshold: float = 0.7) -> Dict[str, Any]:
+        """일괄 피싱 검사 및 삭제"""
+        try:
+            print(f"🚀 [일괄 피싱 검사] 최대 {max_mails}개 메일 검사 시작...")
+            
+            messages = self.get_gmail_messages()
+            if not messages:
+                return {'error': '메일이 없습니다.'}
+            
+            # 검사할 메일 수 제한
+            messages_to_check = messages[:max_mails]
+            total_checked = len(messages_to_check)
+            
+            print(f"📧 [일괄 피싱 검사] {total_checked}개 메일 검사 중...")
+            
+            # 모델 로드
+            model_path = os.path.abspath(MODEL_PATH)
+            if not os.path.exists(model_path):
+                return {'error': f'피싱 판별 모델 파일이 없습니다. (model_path={model_path})'}
+            
+            model_obj = joblib.load(model_path)
+            vectorizer = model_obj['vectorizer']
+            classifier = model_obj['classifier']
+            
+            phishing_mails = []
+            checked_count = 0
+            
+            for i, msg in enumerate(messages_to_check):
+                try:
+                    print(f"🔍 [일괄 피싱 검사] {i+1}/{total_checked}번째 메일 검사 중...")
+                    
+                    message_id = msg['id']
+                    subject = msg['subject']
+                    sender = msg['sender']
+                    
+                    # 메일 본문 가져오기
+                    email_message = gmail_service.get_raw_message(message_id)
+                    if email_message is None:
+                        print(f"⚠️ [일괄 피싱 검사] {i+1}번째 메일 본문 로드 실패, 건너뜀")
+                        continue
+                    
+                    # 본문 추출
+                    text, html = email_parser.extract_text_from_email(email_message)
+                    full_text = (subject or '') + ' ' + (text or '') + ' ' + (html or '')
+                    
+                    # 피싱 검사
+                    X = vectorizer.transform([full_text])
+                    proba = classifier.predict_proba(X)[0][1] if hasattr(classifier, 'predict_proba') else 0.5
+                    
+                    checked_count += 1
+                    
+                    # 임계값 이상이면 피싱으로 판단
+                    if proba >= threshold:
+                        phishing_mails.append({
+                            'index': i,
+                            'message_id': message_id,
+                            'subject': subject,
+                            'sender': sender,
+                            'probability': float(proba)
+                        })
+                        print(f"🚨 [일괄 피싱 검사] 피싱 메일 발견: {subject[:50]}... (확률: {proba:.2f})")
+                    
+                except Exception as e:
+                    print(f"❌ [일괄 피싱 검사] {i+1}번째 메일 검사 실패: {str(e)}")
+                    continue
+            
+            print(f"✅ [일괄 피싱 검사] 검사 완료! 총 {checked_count}개 검사, 피싱 {len(phishing_mails)}개 발견")
+            
+            # 피싱 메일 삭제
+            deleted_count = 0
+            if phishing_mails:
+                print(f"🗑️ [일괄 피싱 검사] {len(phishing_mails)}개 피싱 메일 삭제 시작...")
+                
+                for phishing_mail in phishing_mails:
+                    try:
+                        success = gmail_service.move_to_trash(phishing_mail['message_id'])
+                        if success:
+                            deleted_count += 1
+                            print(f"✅ [일괄 피싱 검사] 삭제 성공: {phishing_mail['subject'][:50]}...")
+                        else:
+                            print(f"❌ [일괄 피싱 검사] 삭제 실패: {phishing_mail['subject'][:50]}...")
+                    except Exception as e:
+                        print(f"❌ [일괄 피싱 검사] 삭제 중 오류: {str(e)}")
+                        continue
+            
+            return {
+                'total_checked': checked_count,
+                'phishing_found': len(phishing_mails),
+                'deleted_count': deleted_count,
+                'phishing_mails': phishing_mails,
+                'threshold': threshold
+            }
+            
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            print(f"[ERROR] 일괄 피싱 검사 예외 발생: {e}\n{tb}")
+            return {'error': f'일괄 피싱 검사 중 오류: {str(e)}'}
+
+    def get_mail_statistics(self, max_mails: int = 100) -> Dict[str, Any]:
+        """메일 통계 분석"""
+        try:
+            print(f"📊 [메일 통계] 최대 {max_mails}개 메일 분석 시작...")
+            
+            messages = self.get_gmail_messages()
+            if not messages:
+                return {'error': '메일이 없습니다.'}
+            
+            # 분석할 메일 수 제한
+            messages_to_analyze = messages[:max_mails]
+            total_messages = len(messages_to_analyze)
+            
+            print(f"📧 [메일 통계] {total_messages}개 메일 분석 중...")
+            
+            # 기본 통계
+            stats = {
+                'total_messages': total_messages,
+                'total_all_messages': len(messages),
+                'sender_stats': {},
+                'domain_stats': {},
+                'keyword_stats': {}
+            }
+            
+            # 발신자별 통계
+            sender_counts = {}
+            domain_counts = {}
+            
+            # 키워드 통계
+            keyword_counts = {}
+            
+            for i, msg in enumerate(messages_to_analyze):
+                try:
+                    print(f"📊 [메일 통계] {i+1}/{total_messages}번째 메일 분석 중...")
+                    
+                    # 발신자 통계
+                    sender = msg.get('sender', 'Unknown')
+                    sender_counts[sender] = sender_counts.get(sender, 0) + 1
+                    
+                    # 도메인 추출
+                    if '@' in sender:
+                        domain = sender.split('@')[-1]
+                        domain_counts[domain] = domain_counts.get(domain, 0) + 1
+                    
+                    # 키워드 분석 (제목 + 내용)
+                    subject = msg.get('subject', '')
+                    snippet = msg.get('snippet', '')
+                    text_for_keywords = (subject + ' ' + snippet).lower()
+                    
+                    # 일반적인 키워드들
+                    keywords = [
+                        'urgent', 'important', 'notice', 'alert', 'warning',
+                        'payment', 'invoice', 'order', 'delivery', 'shipping',
+                        'account', 'security', 'password', 'login', 'verify',
+                        'confirm', 'update', 'expire', 'limited', 'offer',
+                        'free', 'discount', 'sale', 'promotion', 'deal',
+                        'newsletter', 'subscription', 'unsubscribe',
+                        'support', 'help', 'contact', 'service'
+                    ]
+                    
+                    for keyword in keywords:
+                        if keyword in text_for_keywords:
+                            keyword_counts[keyword] = keyword_counts.get(keyword, 0) + 1
+                    
+                except Exception as e:
+                    print(f"❌ [메일 통계] {i+1}번째 메일 분석 실패: {str(e)}")
+                    continue
+            
+            # 통계 정리
+            stats['sender_stats'] = {
+                'unique_senders': len(sender_counts),
+                'top_senders': sorted(sender_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+            }
+            
+            stats['domain_stats'] = {
+                'unique_domains': len(domain_counts),
+                'top_domains': sorted(domain_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+            }
+            
+            stats['keyword_stats'] = {
+                'top_keywords': sorted(keyword_counts.items(), key=lambda x: x[1], reverse=True)[:15]
+            }
+            
+            print(f"✅ [메일 통계] 분석 완료!")
+            
+            return stats
+            
+        except Exception as e:
+            import traceback
+            tb = traceback.format_exc()
+            print(f"[ERROR] 메일 통계 분석 예외 발생: {e}\n{tb}")
+            return {'error': f'메일 통계 분석 중 오류: {str(e)}'}
+
+
 
     def summarize_mails(self, indices: List[int], model: Optional[str]=None, temperature: Optional[float]=None) -> str:
         """메일 요약 (전체 내용 기반)"""
@@ -509,7 +572,7 @@ class OpenAIService:
                 response_content = final_response.choices[0].message.content
                 
                 # 메일 삭제 시 성공 메시지만 표시 (자동 새로고침 제거)
-                if function_name in ["move_message_to_trash", "delete_mails_by_indices"]:
+                if function_name in ["move_message_to_trash", "delete_mails_by_indices", "batch_phishing_delete"]:
                     if function_name == "move_message_to_trash":
                         if function_result.get("success", False):
                             st.success("✅ 메일이 휴지통으로 이동되었습니다.")
@@ -517,6 +580,23 @@ class OpenAIService:
                         results = function_result.get("results", [])
                         if results and any(r.get("success", False) for r in results):
                             st.success("✅ 메일 삭제가 완료되었습니다.")
+                    elif function_name == "batch_phishing_delete":
+                        if "error" not in function_result:
+                            total_checked = function_result.get("total_checked", 0)
+                            phishing_found = function_result.get("phishing_found", 0)
+                            deleted_count = function_result.get("deleted_count", 0)
+                            threshold = function_result.get("threshold", 0.7)
+                            
+                            st.success(f"✅ 피싱 메일 일괄 삭제 완료!")
+                            st.info(f"📊 검사 결과: 총 {total_checked}개 메일 검사, 피싱 {phishing_found}개 발견, {deleted_count}개 삭제 (임계값: {threshold*100:.0f}%)")
+                            
+                            # 삭제된 메일 목록 표시
+                            if function_result.get("phishing_mails"):
+                                with st.expander("🗑️ 삭제된 피싱 메일 목록"):
+                                    for mail in function_result["phishing_mails"]:
+                                        st.write(f"• {mail['subject']} (확률: {mail['probability']*100:.1f}%)")
+                        else:
+                            st.error(f"❌ 피싱 메일 삭제 중 오류: {function_result.get('error', '알 수 없는 오류')}")
                 
                 return response_content
             else:
@@ -587,24 +667,7 @@ class OpenAIService:
                     return self.get_mail_content(index)
                 else:
                     return {"error": f"유효하지 않은 메일 번호: {index + 1}번 (총 {len(messages)}개 메일)"}
-            elif function_name == "web_search_analysis":
-                index = arguments.get("index")
-                if index is not None:
-                    result = self.web_search_analysis(index)
-                    return {"analysis": result}
-                else:
-                    return {"error": "index가 필요합니다."}
-            elif function_name == "batch_web_search_analysis":
-                n = arguments.get("n", 5)
-                results = self.batch_web_search_analysis(n)
-                return {"results": results, "message": f"{len(results)}개 메일 일괄 분석 완료"}
-            elif function_name == "agent_analysis":
-                index = arguments.get("index")
-                if index is not None:
-                    result = self.agent_analysis(index)
-                    return {"analysis": result}
-                else:
-                    return {"error": "index가 필요합니다."}
+
             elif function_name == "search_mails":
                 query = arguments.get("query")
                 max_results = arguments.get("max_results", 10)
@@ -612,6 +675,39 @@ class OpenAIService:
                     return {"results": self.search_mails(query, max_results)}
                 else:
                     return {"error": "query가 필요합니다."}
+            elif function_name == "batch_phishing_delete":
+                # 일괄 피싱 검사 및 삭제
+                max_mails = arguments.get("max_mails", 50)
+                threshold = arguments.get("threshold", 0.7)
+                result = self.batch_check_phishing_and_delete(max_mails, threshold)
+                return result
+            elif function_name == "get_mail_statistics":
+                # 메일 통계 분석
+                max_mails = arguments.get("max_mails", 100)
+                result = self.get_mail_statistics(max_mails)
+                return result
+            elif function_name == "analyze_link_risk":
+                # 개별 메일 링크 위험도 분석
+                index = arguments.get("index")
+                if index is not None:
+                    result = self.analyze_link_risk(index)
+                    return {"analysis": result}
+                else:
+                    return {"error": "index가 필요합니다."}
+            elif function_name == "batch_analyze_link_risk":
+                # 일괄 링크 위험도 분석
+                n = arguments.get("n", 5)
+                results = self.batch_analyze_link_risk(n)
+                return {"results": results, "message": f"{len(results)}개 메일 링크 위험도 일괄 분석 완료"}
+            elif function_name == "web_search_mail_content":
+                # 메일 전체 내용 웹서치 분석
+                index = arguments.get("index")
+                search_query = arguments.get("search_query", "")
+                if index is not None:
+                    result = self.web_search_mail_content(index, search_query)
+                    return {"analysis": result}
+                else:
+                    return {"error": "index가 필요합니다."}
             else:
                 return {"error": f"알 수 없는 함수: {function_name}"}
         except Exception as e:
@@ -714,6 +810,182 @@ class OpenAIService:
             results.append(result)
         
         return results
+
+    def analyze_link_risk(self, email_index: int) -> str:
+        """
+        개별 메일의 링크와 도메인을 웹서치를 통해 위험도 분석
+        """
+        try:
+            print(f"🔍 [링크분석] {email_index + 1}번 메일 링크 위험도 분석 시작...")
+            
+            messages = self.get_gmail_messages()
+            if not messages or email_index >= len(messages):
+                print(f"❌ [링크분석] {email_index + 1}번 메일이 존재하지 않음")
+                return "❌ 해당 번호의 메일이 없습니다."
+            
+            msg = messages[email_index]
+            subject = msg['subject']
+            
+            # 메일 전체 내용 가져오기
+            from mail_utils import get_mail_full_content
+            mail_content = get_mail_full_content(msg['id'])
+            
+            if mail_content.get('error', False):
+                return "❌ 메일 내용을 가져올 수 없습니다."
+            
+            body_text = mail_content.get('body_text', '') or ''
+            
+            # 링크와 도메인 추출
+            import re
+            links = re.findall(r'https?://[^\s<>"]+|www\.[^\s<>"]+', body_text)
+            domains = re.findall(r'[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', body_text)
+            
+            if not links and not domains:
+                return "📭 이 메일에서 링크나 도메인을 찾을 수 없습니다."
+            
+            # 웹서치 분석 수행
+            web_search_prompt = f"""
+다음 이메일의 링크와 도메인을 웹 검색을 통해 위험도를 평가해주세요:
+
+제목: {subject}
+발견된 링크: {links[:5]}  # 최대 5개
+발견된 도메인: {list(set(domains))[:5]}  # 중복 제거 후 최대 5개
+
+각 링크/도메인의 위험도, 악성 여부, 그리고 근거를 웹 검색을 통해 분석해주세요.
+결과는 다음과 같은 형식으로 정리해주세요:
+
+**🔗 발견된 링크/도메인:**
+- [링크/도메인명]: [위험도] - [분석 결과]
+
+**⚠️ 전체 위험도 평가:**
+[전체적인 위험도 평가]
+
+**💡 권장 조치:**
+[사용자에게 권장할 조치사항]
+"""
+            
+            print("🌐 [링크분석] OpenAI API 호출 중...")
+            response = self.client.responses.create(
+                model="gpt-4.1",
+                tools=[{"type": "web_search_preview"}],
+                input=web_search_prompt
+            )
+            
+            result = response.output_text
+            print(f"✅ [링크분석] 분석 완료! 결과 길이: {len(result)}자")
+            
+            return result
+            
+        except Exception as e:
+            print(f"💥 [링크분석] 오류 발생: {str(e)}")
+            return f"❌ 링크 위험도 분석 중 오류: {str(e)}"
+
+    def batch_analyze_link_risk(self, n: int = 5) -> List[Dict[str, Any]]:
+        """
+        최근 n개 메일의 링크와 도메인을 일괄적으로 웹서치로 위험도 분석
+        """
+        print(f"🚀 [링크분석] 최근 {n}개 메일 링크 위험도 일괄 분석 시작...")
+        
+        messages = self.get_gmail_messages()
+        results = []
+        
+        for i, msg in enumerate(messages[:n]):
+            print(f"📧 [링크분석] {i+1}/{n}번째 메일 분석 중...")
+            
+            subject = msg.get('subject', '')
+            print(f"   제목: {subject[:50]}...")
+            
+            try:
+                # 개별 메일 링크 분석
+                analysis_result = self.analyze_link_risk(i)
+                print(f"   ✅ [링크분석] {i+1}번째 메일 분석 완료")
+                
+            except Exception as e:
+                print(f"   💥 [링크분석] {i+1}번째 메일 분석 실패: {str(e)}")
+                analysis_result = f"분석 실패: {str(e)}"
+            
+            results.append({
+                "mail_number": i + 1,
+                "subject": subject,
+                "link_analysis": analysis_result
+            })
+        
+        print(f"🎉 [링크분석] 전체 {len(results)}개 메일 링크 위험도 분석 완료!")
+        return results
+
+    def web_search_mail_content(self, email_index: int, search_query: str = "") -> str:
+        """
+        메일의 전체 내용을 웹서치를 통해 자유롭게 분석
+        """
+        try:
+            print(f"🔍 [웹서치] {email_index + 1}번 메일 전체 내용 분석 시작...")
+            
+            messages = self.get_gmail_messages()
+            if not messages or email_index >= len(messages):
+                print(f"❌ [웹서치] {email_index + 1}번 메일이 존재하지 않음")
+                return "❌ 해당 번호의 메일이 없습니다."
+            
+            msg = messages[email_index]
+            subject = msg['subject']
+            
+            # 메일 전체 내용 가져오기
+            from mail_utils import get_mail_full_content
+            mail_content = get_mail_full_content(msg['id'])
+            
+            if mail_content.get('error', False):
+                return "❌ 메일 내용을 가져올 수 없습니다."
+            
+            body_text = mail_content.get('body_text', '') or ''
+            
+            # 검색할 내용 결정
+            if search_query:
+                # 특정 검색어가 있으면 해당 내용만 사용
+                search_content = search_query
+                print(f"🔍 [웹서치] 특정 검색어 분석: {search_query[:50]}...")
+            else:
+                # 검색어가 없으면 메일 전체 내용 사용 (길이 제한)
+                search_content = body_text[:2000]  # 처음 2000자만 사용
+                print(f"🔍 [웹서치] 메일 전체 내용 분석 (처음 2000자)")
+            
+            # 웹서치 분석 수행
+            web_search_prompt = f"""
+다음 이메일의 내용을 웹 검색을 통해 자유롭게 분석해주세요:
+
+제목: {subject}
+분석할 내용: {search_content}
+
+웹 검색을 통해 이 내용의 신뢰성, 관련 정보, 위험도, 배경 지식 등을 종합적으로 분석해주세요.
+결과는 다음과 같은 형식으로 정리해주세요:
+
+**📧 메일 정보:**
+- 제목: {subject}
+- 분석 내용: {search_content[:100]}...
+
+**🔍 웹서치 분석 결과:**
+[웹 검색을 통해 찾은 관련 정보와 분석]
+
+**⚠️ 위험도 평가:**
+[내용의 신뢰성과 위험도 평가]
+
+**💡 추가 정보:**
+[관련된 배경 지식이나 참고사항]
+"""
+            
+            print("🌐 [웹서치] OpenAI API 호출 중...")
+            response = self.client.responses.create(
+                model="gpt-4.1",
+                tools=[{"type": "web_search_preview"}],
+                input=web_search_prompt
+            )
+            
+            result = response.output_text
+            print(f"✅ [웹서치] 분석 완료! 결과 길이: {len(result)}자")
+            
+            return result
+            
+        except Exception as e:
+            print(f"💥 [웹서치] 오류 발생: {str(e)}")
+            return f"❌ 웹서치 분석 중 오류: {str(e)}"
 
 # 전역 OpenAI 서비스 인스턴스
 openai_service = OpenAIService()

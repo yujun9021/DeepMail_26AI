@@ -67,14 +67,9 @@ CHAT_STYLES = """
     padding: 10px;
     border-radius: 5px;
 }
-</style>
 """
 
-QUICK_ACTIONS = [
-    ("📰", "최근 메일 요약", "최근 5개 메일 요약해줘", "mail_summary"),
-    ("🗑️", "피싱 메일 삭제", "피싱 메일을 찾아서 삭제해줘", "phishing_delete"),
-    ("📊", "메일 통계", "메일 통계를 알려줘", "mail_stats"),
-]
+
 
 MAIL_KEYWORDS = ["삭제", "휴지통", "메일", "피싱", "새로고침"]
 
@@ -98,7 +93,9 @@ class UIComponents:
             'gmail_messages': None,
             'gmail_last_fetch': None,
             'mail_page': 0,
-            'mail_page_size': MAIL_CONFIG['default_page_size']
+            'mail_page_size': MAIL_CONFIG['default_page_size'],
+            'sidebar_model': 'gpt-4',
+            'sidebar_temperature': 0.7
         }
         
         for key, default_value in session_defaults.items():
@@ -121,34 +118,48 @@ class UIComponents:
 
     @staticmethod
     def render_sidebar():
-        """사이드바 렌더링"""
+        """모던 사이드바 렌더링"""
         with st.sidebar:
-            st.header("⚙️ 설정")
+            # 모던 헤더 디자인
+            st.markdown("""
+            <div style="
+                background: linear-gradient(135deg, #1e3a8a 0%, #3730a3 100%);
+                padding: 20px;
+                border-radius: 15px;
+                margin-bottom: 25px;
+                text-align: center;
+                box-shadow: 0 8px 32px rgba(30, 58, 138, 0.3);
+            ">
+                <h2 style="
+                    color: white;
+                    margin: 0;
+                    font-size: 24px;
+                    font-weight: 600;
+                    text-shadow: 0 2px 4px rgba(0,0,0,0.2);
+                ">🚀 DeepMail</h2>
+            </div>
+            """, unsafe_allow_html=True)
+            st.markdown("---")
             
             # 각 섹션 렌더링
-            UIComponents._render_openai_section()
             UIComponents._render_gmail_section()
             UIComponents._render_mail_settings()
-            UIComponents._render_chatbot_settings()
             UIComponents._render_chat_reset()
-
-    @staticmethod
-    def _render_openai_section():
-        """OpenAI API 상태 섹션"""
-        UIComponents.render_openai_status()
-        st.markdown("---")
-
+  
     @staticmethod
     def _render_gmail_section():
-        """Gmail 연결 섹션"""
+        """모던 Gmail 연결 섹션"""
+        if st.session_state.gmail_authenticated:
+            # 사용자 프로필 정보 표시
+            UIComponents.render_user_profile()
+            st.markdown("---")
+        
         UIComponents.render_gmail_connection()
-        st.markdown("---")
 
     @staticmethod
     def _render_mail_settings():
-        """메일 설정 섹션"""
+        """모던 메일 설정 섹션"""
         if st.session_state.gmail_authenticated:
-            st.subheader("📧 메일 설정")
             page_size = st.selectbox(
                 "페이지당 메일 개수",
                 MAIL_CONFIG['page_size_options'],
@@ -159,33 +170,51 @@ class UIComponents:
                 st.session_state.mail_page_size = page_size
                 st.session_state.mail_page = 0
                 UIComponents.rerun()
-            st.markdown("---")
+            
+        st.markdown("---")
+
 
     @staticmethod
     def _render_chatbot_settings():
-        """챗봇 설정 섹션"""
-        model, temperature = UIComponents.render_chatbot_settings()
-        st.session_state["sidebar_model"] = model
-        st.session_state["sidebar_temperature"] = temperature
+        """챗봇 설정 섹션 - 기본 모델 사용"""
+        # 기본 모델 설정
+        st.session_state["sidebar_model"] = "gpt-4"
+        st.session_state["sidebar_temperature"] = 0.7
 
     @staticmethod
     def _render_chat_reset():
-        """채팅 기록 초기화 섹션"""
-        st.markdown("---")
-        col1, col2 = st.columns(2)
+       
+        # 모던 버튼 스타일 적용
+        st.markdown("""
+        <style>
+        div[data-testid="stButton"] > button {
+            background: linear-gradient(135deg, #1e3a8a 0%, #3730a3 100%) !important;
+            color: white !important;
+            border: none !important;
+            border-radius: 25px !important;
+            padding: 12px 24px !important;
+            font-weight: 600 !important;
+            font-size: 14px !important;
+            box-shadow: 0 4px 15px rgba(30, 58, 138, 0.4) !important;
+            transition: all 0.3s ease !important;
+            width: 100% !important;
+            margin-bottom: 10px !important;
+        }
         
-        with col1:
-            if st.button("💬 채팅 기록 초기화"):
-                st.session_state.messages = []
-                st.success("✅ 채팅 기록이 초기화되었습니다!")
+        div[data-testid="stButton"] > button:hover {
+            transform: translateY(-2px) !important;
+            box-shadow: 0 6px 20px rgba(30, 58, 138, 0.6) !important;
+        }
         
-        with col2:
-            if st.button("🗑️ 메일 캐시 초기화"):
-                # 메일 캐시 키들 찾아서 삭제
-                cache_keys_to_remove = [key for key in st.session_state.keys() if key.startswith('mail_content_')]
-                for key in cache_keys_to_remove:
-                    del st.session_state[key]
-                st.success(f"✅ {len(cache_keys_to_remove)}개 메일 캐시가 초기화되었습니다!")
+        div[data-testid="stButton"] > button:active {
+            transform: translateY(0) !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
+        
+        if st.button("💬 채팅 기록 초기화"):
+            st.session_state.messages = []
+            st.success("✅ 채팅 기록이 초기화되었습니다!")
 
     @staticmethod
     def render_openai_status():
@@ -197,15 +226,141 @@ class UIComponents:
             st.info("💡 .env 파일에 OPENAI_API_KEY=your_api_key_here를 추가하세요.")
 
     @staticmethod
+    def render_user_profile():
+        """사용자 프로필 정보 표시"""
+        try:
+            # Gmail API를 통해 사용자 정보 가져오기
+            from gmail_service import gmail_service
+            if gmail_service.service:
+                profile = gmail_service.service.users().getProfile(userId='me').execute()
+                
+                # 프로필 정보
+                email = profile.get('emailAddress', '')
+                name = profile.get('name', email.split('@')[0])
+                
+                # 프로필 이미지 (기본값은 이니셜)
+                profile_image = profile.get('picture', '')
+                
+                # 모던 프로필 카드 디자인
+                if profile_image:
+                    st.markdown(f"""
+                    <div style="
+                        background: linear-gradient(135deg, #1e3a8a 0%, #3730a3 100%);
+                        padding: 20px;
+                        border-radius: 15px;
+                        margin-bottom: 20px;
+                        text-align: center;
+                        box-shadow: 0 8px 32px rgba(30, 58, 138, 0.3);
+                    ">
+                        <img src="{profile_image}" style="
+                            width: 60px;
+                            height: 60px;
+                            border-radius: 50%;
+                            border: 3px solid white;
+                            margin-bottom: 10px;
+                        ">
+                        <h3 style="
+                            color: white;
+                            margin: 5px 0;
+                            font-size: 18px;
+                            font-weight: 600;
+                        ">{name}</h3>
+                        <p style="
+                            color: rgba(255,255,255,0.9);
+                            margin: 0;
+                            font-size: 14px;
+                        ">{email}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                else:
+                    # 프로필 이미지가 없을 때 이니셜 표시
+                    initial = name[0].upper() if name else 'U'
+                    st.markdown(f"""
+                    <div style="
+                        background: linear-gradient(135deg, #1e3a8a 0%, #3730a3 100%);
+                        padding: 20px;
+                        border-radius: 15px;
+                        margin-bottom: 20px;
+                        text-align: center;
+                        box-shadow: 0 8px 32px rgba(30, 58, 138, 0.3);
+                    ">
+                        <div style="
+                            width: 60px;
+                            height: 60px;
+                            border-radius: 50%;
+                            background: rgba(255,255,255,0.2);
+                            border: 3px solid white;
+                            margin: 0 auto 10px auto;
+                            display: flex;
+                            align-items: center;
+                            justify-content: center;
+                            font-size: 24px;
+                            font-weight: bold;
+                            color: white;
+                        ">{initial}</div>
+                        <h3 style="
+                            color: white;
+                            margin: 5px 0;
+                            font-size: 18px;
+                            font-weight: 600;
+                        ">{name}</h3>
+                        <p style="
+                            color: rgba(255,255,255,0.9);
+                            margin: 0;
+                            font-size: 14px;
+                        ">{email}</p>
+                    </div>
+                    """, unsafe_allow_html=True)
+                    
+        except Exception as e:
+            # 오류 발생 시 기본 정보 표시
+            st.markdown("""
+            <div style="
+                background: linear-gradient(135deg, #1e3a8a 0%, #3730a3 100%);
+                padding: 20px;
+                border-radius: 15px;
+                margin-bottom: 20px;
+                text-align: center;
+                box-shadow: 0 8px 32px rgba(30, 58, 138, 0.3);
+            ">
+                <div style="
+                    width: 60px;
+                    height: 60px;
+                    border-radius: 50%;
+                    background: rgba(255,255,255,0.2);
+                    border: 3px solid white;
+                    margin: 0 auto 10px auto;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    font-size: 24px;
+                    font-weight: bold;
+                    color: white;
+                ">👤</div>
+                <h3 style="
+                    color: white;
+                    margin: 5px 0;
+                    font-size: 18px;
+                    font-weight: 600;
+                ">Gmail 사용자</h3>
+                <p style="
+                    color: rgba(255,255,255,0.9);
+                    margin: 0;
+                    font-size: 14px;
+                ">로그인됨</p>
+            </div>
+            """, unsafe_allow_html=True)
+
+    @staticmethod
     def render_gmail_connection():
         """Gmail 연결 섹션"""
         st.subheader("📧 Gmail 연결")
 
         if not st.session_state.gmail_authenticated:
-            if st.button("🔑 Gmail 로그인", type="primary"):
+            if st.button("🔑 Google 로그인", type="primary"):
                 UIComponents.handle_gmail_login()
         else:
-            if st.button("🚪 Gmail 로그아웃"):
+            if st.button("🚪 Google 로그아웃"):
                 UIComponents.handle_gmail_logout()
 
     @staticmethod
@@ -268,6 +423,9 @@ class UIComponents:
             # 삭제된 메일이 있으면 알림
             if deleted_mail_ids:
                 st.info(f"📭 {len(deleted_mail_ids)}개의 메일이 삭제되었습니다.")
+            
+            # 새 메일들의 상세 내용 사전 로딩 (백그라운드)
+            UIComponents._preload_mail_contents(newly_added_ids)
         
         # 메일 목록 업데이트
         st.session_state.gmail_messages = new_messages
@@ -275,6 +433,35 @@ class UIComponents:
         
         # 삭제 추적 초기화 (실제 Gmail 상태와 동기화)
         st.session_state.deleted_mail_ids = set()
+
+    @staticmethod
+    def _preload_mail_contents(mail_ids: set):
+        """메일 상세 내용 사전 로딩"""
+        if not mail_ids:
+            return
+            
+        # 백그라운드에서 메일 내용 로딩
+        for mail_id in mail_ids:
+            cache_key = f"mail_content_{mail_id}"
+            if cache_key not in st.session_state:
+                try:
+                    from mail_utils import get_mail_full_content
+                    # 비동기적으로 로딩 (실제로는 동기적이지만 백그라운드 느낌)
+                    full_content = get_mail_full_content(mail_id)
+                    if not full_content.get('error', False):
+                        st.session_state[cache_key] = full_content
+                except Exception as e:
+                    # 로딩 실패 시 에러 결과 캐싱
+                    st.session_state[cache_key] = {
+                        'subject': '로딩 실패',
+                        'from': '오류',
+                        'to': '오류',
+                        'date': '오류',
+                        'body_text': f'메일 로딩 중 오류가 발생했습니다: {str(e)}',
+                        'body_html': '',
+                        'attachments': [],
+                        'error': True
+                    }
 
     @staticmethod
     def _clear_mail_cache():
@@ -285,23 +472,9 @@ class UIComponents:
 
     @staticmethod
     def render_chatbot_settings():
-        """챗봇 설정 섹션"""
-        model = st.selectbox(
-            "모델 선택",
-            ["gpt-3.5-turbo", "gpt-4"],
-            help="사용할 OpenAI 모델을 선택하세요"
-        )
-
-        temperature = st.slider(
-            "창의성 (Temperature)",
-            min_value=0.0,
-            max_value=2.0,
-            value=0.7,
-            step=0.1,
-            help="높을수록 더 창의적인 응답을 생성합니다"
-        )
-
-        return model, temperature
+        """챗봇 설정 섹션 - 기본값 반환"""
+        # 기본 모델과 설정 반환
+        return "gpt-4", 0.7
     
     @staticmethod
     def safe_rerun():
@@ -322,6 +495,9 @@ class UIComponents:
         
         UIComponents._render_chat_messages()
         UIComponents._process_chat_response()
+        
+        # 빠른 액션 버튼들을 채팅 메시지와 입력창 사이에 배치
+        UIComponents._render_quick_actions()
 
     @staticmethod
     def _render_chat_messages():
@@ -391,58 +567,89 @@ class UIComponents:
     def handle_chat_input():
         """채팅 입력 처리"""
         prompt = st.chat_input("메시지를 입력하세요...")
-        UIComponents._render_quick_actions()
         
         if prompt:
             UIComponents.process_user_prompt(prompt)
 
     @staticmethod
     def _render_quick_actions():
-        """빠른 액션 버튼 렌더링"""
-        cols = st.columns(len(QUICK_ACTIONS), gap="small")
+        """예시 프롬프트 느낌의 빠른 액션 버튼"""
+        # 예시 프롬프트 버튼들
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            if st.button("📰 최근 메일 요약", help="최근 5개 메일 요약해줘"):
+                UIComponents.process_user_prompt("최근 5개 메일 요약해줘")
+        
+        with col2:
+            if st.button("🗑️ 피싱 메일 삭제", help="피싱 메일을 찾아서 삭제해줘"):
+                UIComponents.process_user_prompt("최근 메일들을 일괄적으로 피싱 검사하고 피싱으로 판별된 메일들을 자동으로 삭제해줘")
+        
+        with col3:
+            if st.button("📊 메일 통계", help="메일 통계를 알려줘"):
+                UIComponents.process_user_prompt("Gmail 메일들의 상세한 통계 정보를 분석해서 보여줘")
+        
+        with col4:
+            if st.button("🔍 링크 위험도 분석", help="메일의 링크 위험도를 웹서치로 분석해줘"):
+                UIComponents.process_user_prompt("8번 메일의 링크 위험도를 분석해줘")
 
-        for col, (icon, label, cmd, key) in zip(cols, QUICK_ACTIONS):
-            with col:
-                clicked = st.button(icon, key=key, help=label)
-                if clicked:
-                    UIComponents.process_user_prompt(cmd)
 
-                st.markdown(
-                    f'''
-                    <div style="
-                        display:inline-block;
-                        width:48px;
-                        margin:0px auto 0;
-                        text-align:center;
-                        font-size:12px;
-                        color:#333;
-                        white-space:nowrap;
-                    ">{label}</div>
-                    ''',
-                    unsafe_allow_html=True
-                )
 
     @staticmethod
     def draw_gauge_chart(risk_score: float):
-        """위험도 게이지 차트"""
+        """위험도 게이지 차트 (부드러운 그라데이션 버전)"""
+        # 100단계로 세분화하여 부드러운 그라데이션 생성
+        ranges = []
+        
+        for i in range(100):
+            start = i
+            end = i + 1
+            
+            # 0-100%를 0-1 비율로 변환
+            ratio = i / 100.0
+            
+            # 부드러운 그라데이션 색상 계산 (초록 -> 노랑 -> 빨강)
+            if ratio <= 0.5:  # 0-50%: 초록에서 노랑으로
+                # 초록 (0, 128, 0) -> 노랑 (255, 255, 0)
+                r = int(0 + ratio * 2 * 255)  # 0 -> 255
+                g = int(128 + ratio * 2 * 127)  # 128 -> 255
+                b = int(0)  # 0 유지
+            else:  # 50-100%: 노랑에서 빨강으로
+                # 노랑 (255, 255, 0) -> 빨강 (255, 0, 0)
+                ratio_adjusted = (ratio - 0.5) * 2  # 0-1 범위로 조정
+                r = int(255)  # 255 유지
+                g = int(255 - ratio_adjusted * 255)  # 255 -> 0
+                b = int(0)  # 0 유지
+            
+            color = f'rgb({r}, {g}, {b})'
+            ranges.append({'range': [start, end], 'color': color})
+        
+        # 게이지 바는 고정색으로 설정 (시각적 위험도 표시용)
+        bar_color = "darkblue"
+        
         fig = go.Figure(go.Indicator(
             mode="gauge+number",
             value=risk_score,
-            title={'text': "평균 피싱 위험도 (%)"},
+            title={'text': "평균 피싱 위험도 (%)", 'font': {'size': 18}},
             gauge={
-                'axis': {'range': [0, 100]},
-                'bar': {'color': "darkred"},
-                'steps': [
-                    {'range': [0, 30], 'color': 'lightgreen'},
-                    {'range': [30, 70], 'color': 'yellow'},
-                    {'range': [70, 100], 'color': 'red'}
-                ]
+                'axis': {
+                    'range': [0, 100],
+                    'tickwidth': 1
+                },
+                'bar': {
+                    'color': bar_color,
+                    'thickness': 0.3  # 바 두께를 30%로 줄임
+                },
+                'bgcolor': "white",
+                'borderwidth': 2,
+                'bordercolor': "gray",
+                'steps': ranges
             }
         ))
 
         fig.update_layout(
-            height=400
-            # margin=dict(l=20, r=20, t=130, b=10)
+            height=400,
+            font={'family': "Arial Black"}
         )
 
         st.plotly_chart(fig, use_container_width=True)
@@ -696,7 +903,7 @@ class UIComponents:
         cols = st.columns([2, 2, 1, 1, 1, 1, 1, 3])
 
         with cols[0]:
-            if st.button("🔄 스마트 새로고침"):
+            if st.button("🔄 새로고침"):
                 with st.spinner("메일 목록을 새로고침하는 중..."):
                     UIComponents.refresh_gmail_messages()
                     # 삭제된 메일 추적 초기화
@@ -718,7 +925,40 @@ class UIComponents:
                     st.rerun()
 
         with cols[7]:
-            st.info(f"총 {total_messages}개 메일 (페이지 {st.session_state.mail_page + 1}/{total_pages})")
+            # 모던한 메일 통계 카드
+            st.markdown(f"""
+            <div style="
+                background: linear-gradient(135deg, #1e3a8a 0%, #3730a3 100%);
+                padding: 15px;
+                border-radius: 12px;
+                text-align: center;
+                box-shadow: 0 4px 15px rgba(30, 58, 138, 0.3);
+                margin-top: -5px;
+            ">
+                <div style="
+                    color: rgba(255,255,255,0.9);
+                    font-size: 14px;
+                    font-weight: 500;
+                ">
+                    📄 페이지 {st.session_state.mail_page + 1} / {total_pages}
+                </div>
+                <div style="
+                    background: rgba(255,255,255,0.2);
+                    height: 4px;
+                    border-radius: 2px;
+                    margin-top: 8px;
+                    overflow: hidden;
+                ">
+                    <div style="
+                        background: white;
+                        height: 100%;
+                        width: {(st.session_state.mail_page + 1) / total_pages * 100}%;
+                        border-radius: 2px;
+                        transition: width 0.3s ease;
+                    "></div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
     @staticmethod
     def _render_mail_list(messages: List[Dict]):
@@ -772,13 +1012,27 @@ class UIComponents:
             
             # 메일 전체 내용 로드
             if not is_cached:
-                with st.spinner("메일 내용을 불러오는 중..."):
+                # 로딩 상태 표시
+                loading_placeholder = st.empty()
+                with loading_placeholder.container():
+                    st.info("📥 메일 내용을 불러오는 중...")
+                    progress_bar = st.progress(0)
+                    
+                try:
                     from mail_utils import get_mail_full_content
                     full_content = get_mail_full_content(msg['id'])
+                    
+                    # 로딩 완료 후 플레이스홀더 제거
+                    loading_placeholder.empty()
+                    
+                except Exception as e:
+                    loading_placeholder.empty()
+                    st.error(f"메일 로딩 실패: {str(e)}")
+                    return
             else:
                 full_content = st.session_state[cache_key]
             
-            if full_content['error']:
+            if full_content.get('error', False):
                 st.error("메일을 불러올 수 없습니다.")
                 return
             
@@ -794,16 +1048,16 @@ class UIComponents:
         """메일 상세 정보 렌더링"""
         col1, col2 = st.columns([1, 1])
         with col1:
-            st.write(f"**📅 날짜:** {full_content['date']}")
-            st.write(f"**📬 수신자:** {full_content['to']}")
+            st.write(f"**📅 날짜:** {full_content.get('date', '날짜 없음')}")
+            st.write(f"**📬 수신자:** {full_content.get('to', '수신자 없음')}")
         with col2:
-            if full_content['attachments']:
+            if full_content.get('attachments', []):
                 st.write(f"**📎 첨부파일:** {len(full_content['attachments'])}개")
 
     @staticmethod
     def _render_mail_tabs(full_content: Dict, msg_id: str):
         """메일 탭 렌더링"""
-        has_html = bool(full_content['body_html'])
+        has_html = bool(full_content.get('body_html', ''))
         
         if has_html:
             tab1, tab2, tab3 = st.tabs(["🌐 HTML 보기", "📄 텍스트 보기", "📎 첨부파일"])
@@ -821,7 +1075,12 @@ class UIComponents:
         with tab:
             st.markdown("**HTML 렌더링:**")
             try:
-                cleaned_html = email_parser.clean_html_content(full_content['body_html'])
+                html_content = full_content.get('body_html', '')
+                if not html_content:
+                    st.info("HTML 내용이 없습니다.")
+                    return
+                    
+                cleaned_html = email_parser.clean_html_content(html_content)
                 st.markdown("""
                 <style>
                 .email-scroll-container {
@@ -843,7 +1102,7 @@ class UIComponents:
             except Exception as e:
                 st.error(f"HTML 렌더링 실패: {str(e)}")
                 st.info("텍스트 버전으로 표시합니다.")
-                text_content = email_parser.extract_text_from_html(full_content['body_html'])
+                text_content = email_parser.extract_text_from_html(full_content.get('body_html', ''))
                 st.text_area("정리된 텍스트", text_content, height=300)
 
     @staticmethod
@@ -851,10 +1110,11 @@ class UIComponents:
         """텍스트 탭 렌더링"""
         with tab:
             st.markdown("**텍스트 본문:**")
-            if full_content['body_text']:
-                st.text_area("텍스트 본문", full_content['body_text'], height=300, key=f"text_{msg_id}")
+            body_text = full_content.get('body_text', '')
+            if body_text:
+                st.text_area("텍스트 본문", body_text, height=300, key=f"text_{msg_id}")
             elif has_html:
-                text_content = email_parser.extract_text_from_html(full_content['body_html'])
+                text_content = email_parser.extract_text_from_html(full_content.get('body_html', ''))
                 st.text_area("HTML에서 추출한 텍스트", text_content, height=300, key=f"extracted_{msg_id}")
             else:
                 st.info("텍스트 본문이 없습니다.")
@@ -863,9 +1123,10 @@ class UIComponents:
     def _render_attachments_tab(tab, full_content: Dict):
         """첨부파일 탭 렌더링"""
         with tab:
-            if full_content['attachments']:
+            attachments = full_content.get('attachments', [])
+            if attachments:
                 st.markdown("**첨부파일 목록:**")
-                for attachment in full_content['attachments']:
+                for attachment in attachments:
                     UIComponents._render_attachment_item(attachment)
             else:
                 st.info("첨부파일이 없습니다.")

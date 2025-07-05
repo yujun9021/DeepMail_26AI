@@ -61,7 +61,8 @@ def _create_error_result(cache_key: str, error_msg: str) -> dict:
     st.session_state[cache_key] = result
     return result
 
-def _parse_email_message(email_message: dict) -> dict:
+def _parse_email_message(email_message) -> dict:
+    # email.message.Message 객체에서 헤더 추출
     subject = email_message.get('Subject', '제목 없음')
     from_addr = email_message.get('From', '발신자 없음')
     to_addr = email_message.get('To', '수신자 없음')
