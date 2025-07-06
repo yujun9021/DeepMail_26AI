@@ -119,36 +119,36 @@ DeepMail_26AI/
 └── README.md                    # 프로젝트 문서
 ```
 
-## 🤖 멀티 에이전트 시스템
+## 멀티 에이전트 시스템
 
 ### 에이전트 구성
 
-1. **🔄 Coordinator Agent (조율 에이전트)**
+1. **Coordinator Agent (조율 에이전트)**
    - 다른 에이전트들을 관리하고 작업을 분배
    - 워크플로우 생성 및 실행
    - 에이전트 간 협업 조율
 
-2. **📋 Classifier Agent (분류 에이전트)**
+2. **Classifier Agent (분류 에이전트)**
    - 메일 분류 및 우선순위 결정
    - 카테고리 감지 (긴급, 스팸, 중요, 개인)
    - 추천 액션 생성
 
-3. **🔮 Predictor Agent (예측 에이전트)**
+3. **Predictor Agent (예측 에이전트)**
    - 피싱 메일 예측
    - 스팸 메일 예측
    - 위험도 평가
 
-4. **🔍 Searcher Agent (검색 에이전트)**
+4. **Searcher Agent (검색 에이전트)**
    - 메일 검색
    - 웹 검색 및 정보 수집
    - 링크 위험도 분석
 
-5. **📊 Analyzer Agent (분석 에이전트)**
+5. **Analyzer Agent (분석 에이전트)**
    - 통계 분석
    - 패턴 인식
    - 트렌드 분석
 
-6. **⚡ Executor Agent (실행 에이전트)**
+6. **Executor Agent (실행 에이전트)**
    - 메일 삭제
    - 일괄 작업 수행
    - 실제 작업 실행
@@ -165,7 +165,7 @@ DeepMail_26AI/
 5. Coordinator Agent → 결과 통합 및 사용자 응답
 ```
 
-## 🛡️ 보안 및 성능 최적화
+## 보안 및 성능 최적화
 
 ### API 요청 최적화
 - **배치 처리**: Gmail API 배치 요청으로 효율적인 메일 로드
@@ -177,7 +177,7 @@ DeepMail_26AI/
 - **재시도 로직**: 일시적 오류에 대한 자동 재시도
 - **사용자 친화적 오류 메시지**: 명확한 오류 안내
 
-## 📊 대시보드 기능
+## 대시보드 기능
 
 ### 피싱/스팸 대시보드
 - 실시간 피싱 메일 탐지 결과
@@ -189,7 +189,7 @@ DeepMail_26AI/
 - 시간대별 메일 패턴
 - 키워드 분석
 
-## 🛠️ 기술 스택
+## 기술 스택
 
 - **Frontend**: Streamlit
 - **AI/ML**: OpenAI GPT-4, Scikit-learn, Joblib
@@ -199,7 +199,7 @@ DeepMail_26AI/
 - **Web Parsing**: BeautifulSoup
 - **Async Processing**: Asyncio (멀티 에이전트)
 
-## ⚠️ 주의사항
+## 주의사항
 
 - **API 비용**: OpenAI API 사용량에 따라 비용이 발생합니다
 - **보안**: API 키와 인증 정보를 안전하게 보관하세요
@@ -207,7 +207,7 @@ DeepMail_26AI/
 - **환경변수**: `.env` 파일이 `.gitignore`에 포함되어 있는지 확인하세요
 - **메모리 사용량**: 대량의 메일 처리 시 메모리 사용량을 모니터링하세요
 
-## 🔧 설정 옵션
+## 설정 옵션
 
 ### 메일 설정
 - **로드할 메일 개수**: 10, 30, 50, 100, 200, 500개 선택 가능
@@ -217,11 +217,11 @@ DeepMail_26AI/
 - **기본 모드**: OpenAI Function Calling 사용
 - **멀티 에이전트 모드**: 6개 전문 에이전트 협업
 
-## 📝 라이선스
+## 라이선스
 
 이 프로젝트는 MIT 라이선스 하에 배포됩니다.
 
-## 🤝 기여하기
+## 기여하기
 
 1. Fork the Project
 2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
@@ -229,6 +229,6 @@ DeepMail_26AI/
 4. Push to the Branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
 
-## 📞 지원
+## 지원
 
 문제가 발생하거나 기능 요청이 있으시면 이슈를 생성해주세요.
