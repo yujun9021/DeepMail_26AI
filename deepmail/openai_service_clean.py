@@ -427,10 +427,23 @@ class OpenAIService:
                         domain = sender.split('@')[-1]
                         domain_counts[domain] = domain_counts.get(domain, 0) + 1
                     
-                    # 키워드 분석 (제목 + 내용)
+                    # 키워드 분석 (제목 + 상세 내용)
                     subject = msg.get('subject', '')
                     snippet = msg.get('snippet', '')
-                    text_for_keywords = (subject + ' ' + snippet).lower()
+                    
+                    # 상세 내용 가져오기
+                    full_content = get_mail_full_content(msg['id'])
+                    if full_content.get('error', False):
+                        content_text = snippet
+                    else:
+                        if full_content.get('body_text'):
+                            content_text = full_content['body_text']
+                        elif full_content.get('body_html'):
+                            content_text = email_parser.extract_text_from_html(full_content['body_html'])
+                        else:
+                            content_text = snippet
+                    
+                    text_for_keywords = (subject + ' ' + content_text).lower()
                     
                     # 일반적인 키워드들
                     keywords = [
@@ -477,7 +490,6 @@ class OpenAIService:
             return {'error': f'메일 통계 분석 중 오류: {str(e)}'}
 
 
-
     def summarize_mails(self, indices: List[int], model: Optional[str]=None, temperature: Optional[float]=None) -> str:
         """메일 요약 (전체 내용 기반)"""
         if not self.client:
@@ -516,9 +528,17 @@ class OpenAIService:
         return "\n\n".join(summaries)
 
     def chat_with_function_call(self, user_input: str) -> str:
-        """Function calling을 활용한 챗봇 대화"""
+        """Function calling을 활용한 챗봇 대화 (멀티 에이전트 시스템 연동)"""
         if not self.client:
             return "❌ OpenAI API 키가 설정되지 않았습니다."
+        
+        # 멀티 에이전트 시스템 사용 여부 확인
+        use_multi_agent = st.session_state.get('use_multi_agent', False)
+        
+        if use_multi_agent:
+            return self._process_with_multi_agent(user_input)
+        
+        # 기존 Function Calling 방식
         try:
             messages = [{"role": "user", "content": user_input}]
             response = self.call_openai_chat(
@@ -603,6 +623,82 @@ class OpenAIService:
                 return message.content
         except Exception as e:
             return f"❌ 오류가 발생했습니다: {str(e)}"
+    
+    def _process_with_multi_agent(self, user_input: str) -> str:
+        """멀티 에이전트 시스템을 통한 요청 처리"""
+        try:
+            from agent_system import multi_agent_system
+            import asyncio
+            
+            # 비동기 실행을 위한 루프 생성
+            try:
+                loop = asyncio.get_event_loop()
+            except RuntimeError:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+            
+            # 멀티 에이전트 시스템으로 요청 처리
+            result = loop.run_until_complete(
+                multi_agent_system.process_user_request(user_input)
+            )
+            
+            # 결과를 사용자 친화적으로 변환
+            return self._format_multi_agent_result(result)
+            
+        except Exception as e:
+            return f"❌ 멀티 에이전트 처리 중 오류: {str(e)}"
+    
+    def _format_multi_agent_result(self, result: Dict[str, Any]) -> str:
+        """멀티 에이전트 결과를 사용자 친화적으로 포맷팅"""
+        try:
+            workflow_result = result.get("workflow_result", {})
+            workflow_results = workflow_result.get("workflow_results", [])
+            
+            if not workflow_results:
+                return "❌ 처리할 수 있는 작업이 없습니다."
+            
+            # 결과 요약 생성
+            summary_parts = []
+            
+            for i, step_result in enumerate(workflow_results):
+                if isinstance(step_result, dict) and "error" not in step_result:
+                    # 성공적인 결과 처리
+                    if "prediction_type" in step_result:
+                        if step_result["prediction_type"] == "phishing":
+                            pred_result = step_result.get("result", {})
+                            if pred_result.get("result") == "phishing":
+                                summary_parts.append(f"🚨 피싱 메일로 판별되었습니다 (확률: {pred_result.get('probability', 0)*100:.1f}%)")
+                            else:
+                                summary_parts.append(f"✅ 정상 메일로 판별되었습니다 (확률: {pred_result.get('probability', 0)*100:.1f}%)")
+                    
+                    elif "search_type" in step_result:
+                        if step_result["search_type"] == "email":
+                            total_found = step_result.get("total_found", 0)
+                            summary_parts.append(f"🔍 {total_found}개의 관련 메일을 찾았습니다.")
+                    
+                    elif "analysis_type" in step_result:
+                        if step_result["analysis_type"] == "statistics":
+                            stats = step_result.get("result", {})
+                            total_messages = stats.get("total_messages", 0)
+                            summary_parts.append(f"📊 총 {total_messages}개 메일의 통계 분석이 완료되었습니다.")
+                    
+                    elif "operation_type" in step_result:
+                        if step_result["operation_type"] == "delete":
+                            success_count = step_result.get("success_count", 0)
+                            summary_parts.append(f"🗑️ {success_count}개 메일이 성공적으로 삭제되었습니다.")
+                        elif step_result["operation_type"] == "batch_phishing_delete":
+                            batch_result = step_result.get("result", {})
+                            total_checked = batch_result.get("total_checked", 0)
+                            deleted_count = batch_result.get("deleted_count", 0)
+                            summary_parts.append(f"🛡️ {total_checked}개 메일 검사, {deleted_count}개 피싱 메일 삭제 완료")
+            
+            if summary_parts:
+                return "\n\n".join(summary_parts)
+            else:
+                return "✅ 요청이 처리되었습니다."
+                
+        except Exception as e:
+            return f"❌ 결과 포맷팅 중 오류: {str(e)}"
 
     def handle_function_call(self, function_name: str, arguments: Dict[str, Any]) -> Dict[str, Any]:
         """Function calling 결과를 실제 함수로 실행"""
@@ -748,50 +844,85 @@ class OpenAIService:
         return results
 
     def get_mail_content(self, index: int) -> Dict[str, Any]:
-        """번호(인덱스)로 메일의 제목/내용을 반환"""
+        """번호(인덱스)로 메일의 제목/내용을 반환 (상세 내용 포함)"""
         messages = self.get_gmail_messages()
         if 0 <= index < len(messages):
             msg = messages[index]
+            
+            # 상세 내용 가져오기
+            full_content = get_mail_full_content(msg['id'])
+            
+            if full_content.get('error', False):
+                # 에러 시 스니펫으로 대체
+                content_text = msg.get('snippet', '내용 없음')
+            else:
+                if full_content.get('body_text'):
+                    content_text = full_content['body_text']
+                elif full_content.get('body_html'):
+                    content_text = email_parser.extract_text_from_html(full_content['body_html'])
+                else:
+                    content_text = msg.get('snippet', '내용 없음')
+            
             return {
                 "subject": msg["subject"],
                 "sender": msg["sender"],
-                "snippet": msg["snippet"]
+                "snippet": msg["snippet"],
+                "full_content": content_text,
+                "date": full_content.get('date', '날짜 없음'),
+                "to": full_content.get('to', '수신자 없음'),
+                "attachments": full_content.get('attachments', [])
             }
         else:
             return {"error": f"{index+1}번 메일이 존재하지 않습니다."}
 
     def search_mails(self, query: str, max_results: int = 10) -> list:
-        """제목, 발신자, 본문(snippet)에서 키워드로 검색하고 스니펫 기반 요약 생성"""
+        """제목, 발신자, 본문(상세 내용)에서 키워드로 검색하고 상세 내용 기반 요약 생성"""
         messages = self.get_gmail_messages()
         results = []
         query_lower = query.lower()
         
-        # 검색 결과 수집
+        # 검색 결과 수집 (상세 내용 포함)
         search_results = []
         for idx, msg in enumerate(messages):
+            # 상세 내용 가져오기
+            full_content = get_mail_full_content(msg['id'])
+            
+            if full_content.get('error', False):
+                content_text = msg.get('snippet', '')
+            else:
+                if full_content.get('body_text'):
+                    content_text = full_content['body_text']
+                elif full_content.get('body_html'):
+                    content_text = email_parser.extract_text_from_html(full_content['body_html'])
+                else:
+                    content_text = msg.get('snippet', '')
+            
+            # 상세 내용에서도 검색
             if (query_lower in msg.get('subject', '').lower() or
                 query_lower in msg.get('sender', '').lower() or
-                query_lower in msg.get('snippet', '').lower()):
+                query_lower in msg.get('snippet', '').lower() or
+                query_lower in content_text.lower()):
                 search_results.append({
                     "index": idx,
                     "mail_number": idx + 1,  # 사용자 번호 (1부터 시작)
                     "subject": msg.get('subject', ''),
                     "sender": msg.get('sender', ''),
-                    "snippet": msg.get('snippet', '')
+                    "snippet": msg.get('snippet', ''),
+                    "full_content": content_text
                 })
             if len(search_results) >= max_results:
                 break
         
-        # 각 검색 결과에 대해 개별 요약 생성
+        # 각 검색 결과에 대해 개별 요약 생성 (상세 내용 기반)
         for result in search_results:
             if self.client:
                 try:
-                    # 개별 메일 요약 생성 (메일 번호 포함)
+                    # 개별 메일 요약 생성 (상세 내용 사용)
                     summary_prompt = f"""다음 {result['mail_number']}번 메일을 간단히 요약해주세요:
 
 제목: {result['subject']}
 발신자: {result['sender']}
-내용: {result['snippet'][:300]}
+내용: {result['full_content'][:1000]}
 
 1-2문장으로 핵심 내용을 요약해주세요."""
 

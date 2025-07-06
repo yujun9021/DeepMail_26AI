@@ -94,6 +94,7 @@ class UIComponents:
             'gmail_last_fetch': None,
             'mail_page': 0,
             'mail_page_size': MAIL_CONFIG['default_page_size'],
+            'mail_load_count': 30,  # 로드할 메일 개수 기본값
             'sidebar_model': 'gpt-4',
             'sidebar_temperature': 0.7
         }
@@ -160,23 +161,62 @@ class UIComponents:
     def _render_mail_settings():
         """모던 메일 설정 섹션"""
         if st.session_state.gmail_authenticated:
+            st.markdown("### 📧 메일 설정")
+            
+            # 로드할 메일 개수 설정
+            load_count = st.selectbox(
+                "로드할 메일 개수",
+                MAIL_CONFIG['load_count_options'],
+                index=MAIL_CONFIG['load_count_options'].index(st.session_state.get('mail_load_count', 30)),
+                help="새로고침 시 가져올 메일 개수를 선택하세요"
+            )
+            if load_count != st.session_state.get('mail_load_count', 30):
+                st.session_state.mail_load_count = load_count
+            
+            # 페이지당 메일 개수 설정
             page_size = st.selectbox(
                 "페이지당 메일 개수",
                 MAIL_CONFIG['page_size_options'],
-                index=0,
+                index=MAIL_CONFIG['page_size_options'].index(st.session_state.get('mail_page_size', 10)),
                 help="한 페이지에 표시할 메일 개수를 선택하세요"
             )
-            if page_size != st.session_state.mail_page_size:
+            if page_size != st.session_state.get('mail_page_size', 10):
                 st.session_state.mail_page_size = page_size
                 st.session_state.mail_page = 0
-                UIComponents.rerun()
             
         st.markdown("---")
 
 
     @staticmethod
     def _render_chatbot_settings():
-        """챗봇 설정 섹션 - 기본 모델 사용"""
+        """챗봇 설정 섹션 - 멀티 에이전트 시스템 포함"""
+        st.markdown("### 🤖 AI 시스템 설정")
+        
+        # 멀티 에이전트 시스템 토글
+        use_multi_agent = st.checkbox(
+            "멀티 에이전트 시스템 사용",
+            value=st.session_state.get('use_multi_agent', False),
+            help="여러 전문 에이전트가 협업하여 작업을 처리합니다"
+        )
+        st.session_state['use_multi_agent'] = use_multi_agent
+        
+        if use_multi_agent:
+            st.info("🔄 멀티 에이전트 모드: 작업이 여러 전문 에이전트에게 위임되어 처리됩니다")
+            
+            # 에이전트 상태 표시
+            if st.button("📊 에이전트 상태 확인"):
+                from agent_system import multi_agent_system
+                status = multi_agent_system.get_system_status()
+                
+                st.markdown("#### 🤖 등록된 에이전트")
+                for agent_name, agent_status in status['agents'].items():
+                    status_icon = "🟢" if agent_status['is_available'] else "🔴"
+                    st.write(f"{status_icon} **{agent_name}**: {agent_status['agent_type']}")
+                    if agent_status['current_task']:
+                        st.write(f"   └ 현재 작업: {agent_status['current_task']}")
+        else:
+            st.info("🔧 기본 모드: OpenAI Function Calling을 사용합니다")
+        
         # 기본 모델 설정
         st.session_state["sidebar_model"] = "gpt-4"
         st.session_state["sidebar_temperature"] = 0.7
@@ -392,6 +432,9 @@ class UIComponents:
     @staticmethod
     def refresh_gmail_messages():
         """Gmail 메시지 스마트 새로고침 (캐시 유지 + 새 메일만 추가)"""
+        # 설정된 로드 개수 가져오기
+        load_count = st.session_state.get('mail_load_count', 30)
+        
         # 현재 캐시된 메일 ID들 확인
         cached_mail_ids = set()
         for key in st.session_state.keys():
@@ -399,8 +442,8 @@ class UIComponents:
                 mail_id = key.replace('mail_content_', '')
                 cached_mail_ids.add(mail_id)
         
-        # Gmail에서 최신 메일 목록 가져오기
-        new_messages = gmail_service.get_messages()
+        # Gmail에서 최신 메일 목록 가져오기 (설정된 개수만큼)
+        new_messages = gmail_service.get_messages(max_results=load_count)
         
         if new_messages:
             # 새로 추가된 메일 ID들 찾기
@@ -433,35 +476,16 @@ class UIComponents:
         
         # 삭제 추적 초기화 (실제 Gmail 상태와 동기화)
         st.session_state.deleted_mail_ids = set()
+        
+        # 로딩 완료 알림
+        st.success(f"✅ {len(new_messages)}개 메일을 새로고침했습니다! (설정: {load_count}개)")
 
     @staticmethod
     def _preload_mail_contents(mail_ids: set):
-        """메일 상세 내용 사전 로딩"""
-        if not mail_ids:
-            return
-            
-        # 백그라운드에서 메일 내용 로딩
-        for mail_id in mail_ids:
-            cache_key = f"mail_content_{mail_id}"
-            if cache_key not in st.session_state:
-                try:
-                    from mail_utils import get_mail_full_content
-                    # 비동기적으로 로딩 (실제로는 동기적이지만 백그라운드 느낌)
-                    full_content = get_mail_full_content(mail_id)
-                    if not full_content.get('error', False):
-                        st.session_state[cache_key] = full_content
-                except Exception as e:
-                    # 로딩 실패 시 에러 결과 캐싱
-                    st.session_state[cache_key] = {
-                        'subject': '로딩 실패',
-                        'from': '오류',
-                        'to': '오류',
-                        'date': '오류',
-                        'body_text': f'메일 로딩 중 오류가 발생했습니다: {str(e)}',
-                        'body_html': '',
-                        'attachments': [],
-                        'error': True
-                    }
+        """메일 상세 내용 사전 로딩 (429 에러 방지를 위해 비활성화)"""
+        # 429 에러 방지를 위해 사전 로딩 기능 비활성화
+        # 사용자가 "상세 내용 보기" 버튼을 클릭할 때만 로드
+        pass
 
     @staticmethod
     def _clear_mail_cache():
@@ -592,6 +616,21 @@ class UIComponents:
         with col4:
             if st.button("🔍 링크 위험도 분석", help="메일의 링크 위험도를 웹서치로 분석해줘"):
                 UIComponents.process_user_prompt("8번 메일의 링크 위험도를 분석해줘")
+        
+        # 멀티 에이전트 데모 버튼 추가
+        if st.session_state.get('use_multi_agent', False):
+            st.markdown("---")
+            st.markdown("### 🤖 멀티 에이전트 데모")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("🔄 복합 작업 데모", help="분류→예측→실행 워크플로우 데모"):
+                    UIComponents.process_user_prompt("최근 메일들을 분석하고 피싱 메일을 찾아서 삭제해줘")
+            
+            with col2:
+                if st.button("📊 통계 분석 데모", help="통계 분석 에이전트 데모"):
+                    UIComponents.process_user_prompt("메일 통계를 분석하고 인사이트를 제공해줘")
 
 
 
@@ -973,16 +1012,18 @@ class UIComponents:
 
     @staticmethod
     def _render_mail_item(msg: Dict, global_idx: int):
-        """개별 메일 아이템 렌더링"""
+        """개별 메일 아이템 렌더링 (조건부 데이터 로딩)"""
         cache_key = f"mail_content_{msg['id']}"
         is_cached = cache_key in st.session_state
+        expanded_key = f"expanded_{msg['id']}"
         
         # 삭제된 메일인지 확인
         if msg['id'] in st.session_state.get('deleted_mail_ids', set()):
             return  # 삭제된 메일은 렌더링하지 않음
         
+        # 익스펜더 렌더링 (기본 정보만 표시)
         with st.expander(f"📧 [{global_idx + 1}] {msg['subject']}", expanded=False):
-            # 기본 정보 표시
+            # 기본 정보만 표시 (API 호출 없음)
             st.write(f"**📧 발신자:** {msg['sender']}")
             st.write(f"**📄 내용:** {msg['snippet']}")
             
@@ -1006,39 +1047,54 @@ class UIComponents:
                     else:
                         st.error("❌ 메일 삭제에 실패했습니다.")
             
-            # 캐시 상태 표시
-            if is_cached:
-                st.success("✅ 캐시된 메일 (빠른 로딩)")
+            # 상세 내용 보기 버튼
+            if st.button("📄 상세 내용 보기", key=f"detail_{msg['id']}"):
+                st.session_state[expanded_key] = True
+                st.rerun()
             
-            # 메일 전체 내용 로드
-            if not is_cached:
-                # 로딩 상태 표시
-                loading_placeholder = st.empty()
-                with loading_placeholder.container():
-                    st.info("📥 메일 내용을 불러오는 중...")
-                    progress_bar = st.progress(0)
-                    
-                try:
-                    from mail_utils import get_mail_full_content
-                    full_content = get_mail_full_content(msg['id'])
-                    
-                    # 로딩 완료 후 플레이스홀더 제거
-                    loading_placeholder.empty()
-                    
-                except Exception as e:
-                    loading_placeholder.empty()
-                    st.error(f"메일 로딩 실패: {str(e)}")
+            # 익스펜더가 펼쳐졌을 때만 상세 내용 로드
+            if st.session_state.get(expanded_key, False):
+                # 캐시 상태 표시
+                if is_cached:
+                    st.success("✅ 캐시된 메일 (빠른 로딩)")
+                
+                # 메일 전체 내용 로드 (조건부)
+                if not is_cached:
+                    # 로딩 상태 표시
+                    loading_placeholder = st.empty()
+                    with loading_placeholder.container():
+                        st.info("📥 메일 내용을 불러오는 중...")
+                        progress_bar = st.progress(0)
+                        
+                    try:
+                        from mail_utils import get_mail_full_content
+                        full_content = get_mail_full_content(msg['id'])
+                        
+                        # 캐시에 저장
+                        st.session_state[cache_key] = full_content
+                        
+                        # 로딩 완료 후 플레이스홀더 제거
+                        loading_placeholder.empty()
+                        
+                    except Exception as e:
+                        loading_placeholder.empty()
+                        st.error(f"메일 로딩 실패: {str(e)}")
+                        return
+                else:
+                    full_content = st.session_state[cache_key]
+                
+                if full_content.get('error', False):
+                    st.error("메일을 불러올 수 없습니다.")
                     return
-            else:
-                full_content = st.session_state[cache_key]
-            
-            if full_content.get('error', False):
-                st.error("메일을 불러올 수 없습니다.")
-                return
-            
-            # 상세 정보 및 탭 렌더링
-            UIComponents._render_mail_details(full_content)
-            UIComponents._render_mail_tabs(full_content, msg['id'])
+                
+                # 상세 정보 및 탭 렌더링
+                UIComponents._render_mail_details(full_content)
+                UIComponents._render_mail_tabs(full_content, msg['id'])
+                
+                # 접기 버튼
+                if st.button("📁 접기", key=f"collapse_{msg['id']}"):
+                    st.session_state[expanded_key] = False
+                    st.rerun()
             
             # 챗봇 참조 안내
             st.info(f"💡 이 메일을 챗봇에서 참조하려면 '{global_idx + 1}번 메일'이라고 말하세요!")

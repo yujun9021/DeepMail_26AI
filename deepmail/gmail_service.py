@@ -66,7 +66,7 @@ class GmailService:
         return creds
     
     def get_messages(self, max_results=None):
-        """Gmail 메시지 목록 조회 (배치 요청으로 최적화)"""
+        """Gmail 메시지 목록 조회 (최소한의 정보만 가져오기)"""
         if not self.service:
             st.error("❌ Gmail 서비스가 초기화되지 않았습니다.")
             return []
@@ -79,38 +79,65 @@ class GmailService:
             if not messages:
                 return []
             
-            # 배치 요청으로 메일 상세 정보 가져오기
-            batch = self.service.new_batch_http_request()
+            # 최소한의 정보만 가져오기 (제목, 발신자, 스니펫)
+            # 배치 요청 대신 개별 요청으로 변경하여 429 에러 방지
             message_details = []
             
-            def callback(request_id, response, exception):
-                if exception is None:
-                    headers = response['payload']['headers']
+            for i, message in enumerate(messages):
+                try:
+                    # 개별 메일 정보 가져오기 (필수 정보만)
+                    msg = self.service.users().messages().get(
+                        userId='me', 
+                        id=message['id'],
+                        format='metadata',
+                        metadataHeaders=['Subject', 'From']
+                    ).execute()
+                    
+                    headers = msg['payload']['headers']
                     subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '제목 없음')
                     sender = next((h['value'] for h in headers if h['name'] == 'From'), '발신자 없음')
                     
                     message_details.append({
-                        'id': response['id'],
+                        'id': msg['id'],
                         'subject': subject,
                         'sender': sender,
-                        'snippet': response.get('snippet', '')
+                        'snippet': msg.get('snippet', '')
                     })
-                else:
-                    st.warning(f"메일 정보 가져오기 실패: {exception}")
+                    
+                    # 진행률 표시 (숫자만 업데이트)
+                    if i % 10 == 0:
+                        # 기존 진행률 메시지가 있으면 업데이트, 없으면 새로 생성
+                        progress_key = "mail_loading_progress"
+                        if progress_key not in st.session_state:
+                            st.session_state[progress_key] = st.empty()
+                        
+                        st.session_state[progress_key].info(f"📧 메일 정보 로딩 중... ({i+1}/{len(messages)})")
+                        
+                except Exception as e:
+                    st.warning(f"메일 {message['id']} 정보 가져오기 실패: {str(e)}")
+                    # 실패한 메일은 기본 정보로 추가
+                    message_details.append({
+                        'id': message['id'],
+                        'subject': '로딩 실패',
+                        'sender': '알 수 없음',
+                        'snippet': '메일 정보를 가져올 수 없습니다.'
+                    })
             
-            # 배치 요청에 메일 ID들 추가
-            for message in messages:
-                batch.add(
-                    self.service.users().messages().get(userId='me', id=message['id']),
-                    callback=callback
-                )
-            
-            # 배치 요청 실행
-            batch.execute()
+            # 로딩 완료 시 진행률 메시지 제거
+            progress_key = "mail_loading_progress"
+            if progress_key in st.session_state:
+                st.session_state[progress_key].empty()
+                del st.session_state[progress_key]
             
             return message_details
             
         except Exception as e:
+            # 에러 발생 시에도 진행률 메시지 제거
+            progress_key = "mail_loading_progress"
+            if progress_key in st.session_state:
+                st.session_state[progress_key].empty()
+                del st.session_state[progress_key]
+            
             st.error(f"❌ 메일 목록 조회 실패: {str(e)}")
             return []
     
