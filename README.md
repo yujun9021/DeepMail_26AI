@@ -112,7 +112,6 @@ DeepMail_26AI/
 ├── models/
 │   ├── rf_phishing_model.pkl     # 피싱 탐지 모델
 │   └── phishing_Detecting_model.joblib
-├── cache/                        # 캐시 파일들
 ├── log/
 │   └── deepmail.log             # 로그 파일
 ├── requirements.txt              # 의존성 패키지
@@ -228,6 +227,27 @@ DeepMail_26AI/
 3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
 4. Push to the Branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
+
+## 로그 시스템
+
+### 로그 파일 구성
+- **deepmail.log**: 일반 정보 로그
+- **error.log**: 에러 및 예외 로그
+- **debug.log**: 디버그 정보 로그
+- **activity.log**: 사용자 활동 로그 (JSON 형식)
+- **performance.log**: 성능 모니터링 로그 (JSON 형식)
+
+### 로그 기능
+- **자동 로그 분류**: 로그 레벨에 따른 자동 파일 분리
+- **사용자 활동 추적**: 로그인, 메일 작업, 챗봇 상호작용 등
+- **성능 모니터링**: API 호출 시간, 함수 실행 시간 측정
+- **자동 로그 정리**: 설정 가능한 기간 후 오래된 로그 자동 삭제
+- **로그 내보내기**: JSON 형식으로 로그 데이터 내보내기
+
+### 로그 테스트
+```bash
+python test_logger.py
+```
 
 ## 지원
 

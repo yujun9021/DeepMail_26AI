@@ -45,5 +45,5 @@ SESSION_KEYS = {
     'gmail_last_fetch': 'gmail_last_fetch',
     'mail_page': 'mail_page',
     'mail_page_size': 'mail_page_size',
-    'needs_refresh': 'needs_refresh'
+
 } 

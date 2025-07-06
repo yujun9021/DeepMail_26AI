@@ -20,6 +20,7 @@ import quopri
 import re
 from bs4 import BeautifulSoup
 from config import SCOPES, MAIL_CONFIG
+from logger import logger, activity_logger, performance_logger, log_api_call
 
 class GmailService:
     """Gmail 서비스 클래스"""
@@ -28,21 +29,27 @@ class GmailService:
         self.credentials = None
         self.service = None
     
+    @log_api_call("Gmail_Authentication")
     def authenticate(self):
         """Gmail OAuth 인증"""
+        logger.info("Gmail 인증 시작")
         creds = None
         
         # 기존 토큰 로드
         if os.path.exists('token.pickle'):
             with open('token.pickle', 'rb') as token:
                 creds = pickle.load(token)
+            logger.debug("기존 토큰 로드됨")
         
         # 토큰 유효성 검사 및 갱신
         if not creds or not creds.valid:
             if creds and creds.expired and creds.refresh_token:
                 try:
+                    logger.info("토큰 갱신 시도")
                     creds.refresh(Request())
-                except:
+                    logger.info("토큰 갱신 성공")
+                except Exception as e:
+                    logger.warning(f"토큰 갱신 실패: {str(e)}")
                     if os.path.exists('token.pickle'):
                         os.remove('token.pickle')
                     creds = None
@@ -50,38 +57,52 @@ class GmailService:
             # 새 인증 진행
             if not creds:
                 if os.path.exists('credentials.json'):
+                    logger.info("새 OAuth 인증 시작")
                     flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
                     creds = flow.run_local_server(port=0)
+                    logger.info("OAuth 인증 완료")
                 else:
+                    logger.error("credentials.json 파일이 없음")
                     st.error("❌ credentials.json 파일이 필요합니다!")
                     return None
             
             # 토큰 저장
             with open('token.pickle', 'wb') as token:
                 pickle.dump(creds, token)
+            logger.info("토큰 저장 완료")
         
         self.credentials = creds
         if creds:
             self.service = build('gmail', 'v1', credentials=creds)
+            logger.info("Gmail 서비스 빌드 완료")
         return creds
     
+    @log_api_call("Gmail_GetMessages")
     def get_messages(self, max_results=None):
         """Gmail 메시지 목록 조회 (최소한의 정보만 가져오기)"""
         if not self.service:
+            logger.error("Gmail 서비스가 초기화되지 않음")
             st.error("❌ Gmail 서비스가 초기화되지 않았습니다.")
             return []
         
         try:
             max_results = max_results or MAIL_CONFIG['max_results']
+            logger.info(f"메일 목록 조회 시작 (최대 {max_results}개)")
+            
             results = self.service.users().messages().list(userId='me', maxResults=max_results).execute()
             messages = results.get('messages', [])
             
             if not messages:
+                logger.info("조회된 메일이 없음")
                 return []
+            
+            logger.info(f"총 {len(messages)}개 메일 발견")
             
             # 최소한의 정보만 가져오기 (제목, 발신자, 스니펫)
             # 배치 요청 대신 개별 요청으로 변경하여 429 에러 방지
             message_details = []
+            success_count = 0
+            error_count = 0
             
             for i, message in enumerate(messages):
                 try:
@@ -103,6 +124,7 @@ class GmailService:
                         'sender': sender,
                         'snippet': msg.get('snippet', '')
                     })
+                    success_count += 1
                     
                     # 진행률 표시 (숫자만 업데이트)
                     if i % 10 == 0:
@@ -114,6 +136,7 @@ class GmailService:
                         st.session_state[progress_key].info(f"📧 메일 정보 로딩 중... ({i+1}/{len(messages)})")
                         
                 except Exception as e:
+                    logger.warning(f"메일 {message['id']} 정보 가져오기 실패: {str(e)}")
                     st.warning(f"메일 {message['id']} 정보 가져오기 실패: {str(e)}")
                     # 실패한 메일은 기본 정보로 추가
                     message_details.append({
@@ -122,6 +145,7 @@ class GmailService:
                         'sender': '알 수 없음',
                         'snippet': '메일 정보를 가져올 수 없습니다.'
                     })
+                    error_count += 1
             
             # 로딩 완료 시 진행률 메시지 제거
             progress_key = "mail_loading_progress"
@@ -129,6 +153,7 @@ class GmailService:
                 st.session_state[progress_key].empty()
                 del st.session_state[progress_key]
             
+            logger.info(f"메일 목록 조회 완료: 성공 {success_count}개, 실패 {error_count}개")
             return message_details
             
         except Exception as e:
@@ -138,26 +163,37 @@ class GmailService:
                 st.session_state[progress_key].empty()
                 del st.session_state[progress_key]
             
+            logger.error(f"메일 목록 조회 실패: {str(e)}")
             st.error(f"❌ 메일 목록 조회 실패: {str(e)}")
             return []
     
+    @log_api_call("Gmail_MoveToTrash")
     def move_to_trash(self, message_id):
         """메일을 휴지통으로 이동"""
         if not self.service:
+            logger.error("Gmail 인증이 필요함")
             st.error("❌ Gmail 인증이 필요합니다.")
             return False
         
         try:
+            logger.info(f"메일 휴지통 이동 시작: {message_id}")
             result = self.service.users().messages().trash(userId='me', id=message_id).execute()
             
             if result and 'id' in result:
+                logger.info(f"메일 휴지통 이동 성공: {message_id}")
+                activity_logger.log_mail_operation("move_to_trash", [message_id], True)
                 return True
             else:
+                logger.error(f"휴지통 이동 결과 확인 불가: {message_id}")
                 st.error("❌ 휴지통 이동 결과를 확인할 수 없습니다.")
+                activity_logger.log_mail_operation("move_to_trash", [message_id], False)
                 return False
                 
         except Exception as e:
             error_msg = str(e)
+            logger.error(f"메일 휴지통 이동 실패: {message_id}, 오류: {error_msg}")
+            activity_logger.log_mail_operation("move_to_trash", [message_id], False)
+            
             if "404" in error_msg:
                 st.error("❌ 메일을 찾을 수 없습니다. 이미 삭제되었을 수 있습니다.")
             elif "403" in error_msg:

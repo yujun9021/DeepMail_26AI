@@ -11,6 +11,7 @@ from config import OPENAI_CONFIG
 from gmail_service import gmail_service, email_parser
 from typing import List, Dict, Any, Optional, Union
 from mail_utils import get_mail_full_content
+from logger import logger, activity_logger, performance_logger, log_api_call, log_function_call
 
 
 # 모델 경로 정의
@@ -159,7 +160,12 @@ class OpenAIService:
     def initialize_client(self) -> None:
         """OpenAI 클라이언트 초기화"""
         api_key = os.getenv("OPENAI_API_KEY")
-        self.client = OpenAI(api_key=api_key) if api_key else None
+        if api_key:
+            self.client = OpenAI(api_key=api_key)
+            logger.info("OpenAI 클라이언트 초기화 성공")
+        else:
+            self.client = None
+            logger.error("OpenAI API 키가 설정되지 않음")
 
     def handle_error(self, error: Exception) -> str:
         """OpenAI API 오류 처리"""
@@ -173,13 +179,17 @@ class OpenAIService:
         else:
             return f"❌ 오류가 발생했습니다: {error_message}"
 
+    @log_api_call("OpenAI_ChatCompletion")
     def call_openai_chat(self, messages: List[Dict[str, Any]], model: Optional[str]=None, functions: Optional[List[Dict[str, Any]]]=None, function_call: Optional[str]=None, temperature: Optional[float]=None, max_tokens: Optional[int]=None) -> Any:
         """OpenAI Chat API 호출 공통 함수"""
         model = model or OPENAI_CONFIG['model']
         temperature = temperature if temperature is not None else OPENAI_CONFIG['temperature']
         max_tokens = max_tokens or OPENAI_CONFIG['max_tokens']
+        
+        logger.debug(f"OpenAI API 호출: 모델={model}, 함수={len(functions) if functions else 0}개")
+        
         try:
-            return self.client.chat.completions.create(
+            response = self.client.chat.completions.create(
                 model=model,
                 messages=messages,
                 functions=functions,
@@ -187,18 +197,17 @@ class OpenAIService:
                 temperature=temperature,
                 max_tokens=max_tokens
             )
+            logger.debug("OpenAI API 호출 성공")
+            return response
         except Exception as e:
+            logger.error(f"OpenAI API 호출 실패: {str(e)}")
             raise RuntimeError(self.handle_error(e))
 
     def get_gmail_messages(self) -> List[Dict[str, Any]]:
         """세션에서 Gmail 메일 목록 반환"""
         return st.session_state.get('gmail_messages', [])
 
-    def set_needs_refresh(self) -> None:
-        """메일 목록 새로고침 플래그 설정 (현재 사용하지 않음)"""
-        # 자동 새로고침을 제거하여 성능 향상
-        # st.session_state['needs_refresh'] = True
-        pass
+
 
     # ===== 웹서치 기능 (핵심) =====
     
@@ -207,10 +216,6 @@ class OpenAIService:
         커스텀 프롬프트로 웹서치 분석 (핵심 기능)
         """
         try:
-            print(f"🔍 [웹서치] 커스텀 프롬프트 분석 시작...")
-            print(f"📝 [웹서치] 프롬프트 미리보기: {custom_prompt[:100]}...")
-            
-            print("🌐 [웹서치] OpenAI API 호출 중...")
             response = self.client.responses.create(
                 model="gpt-4.1",
                 tools=[{"type": "web_search_preview"}],
@@ -218,13 +223,10 @@ class OpenAIService:
             )
             
             result = response.output_text
-            print(f"✅ [웹서치] 분석 완료! 결과 길이: {len(result)}자")
-            print(f"📝 [웹서치] 결과 미리보기: {result[:100]}...")
-            
             return result
             
         except Exception as e:
-            print(f"💥 [웹서치] 오류 발생: {str(e)}")
+            logger.error(f"웹서치 분석 중 오류: {str(e)}")
             return f"❌ 웹서치 분석 중 오류: {str(e)}"
 
     # ===== 기존 기능들 =====
@@ -232,9 +234,7 @@ class OpenAIService:
     def check_email_phishing(self, email_index: int) -> Dict[str, Any]:
         """ML 모델 기반 피싱 검사"""
         try:
-            print(f"[DEBUG] Step 1: 인증 및 메일 목록 가져오기")
             messages = self.get_gmail_messages()
-            print(f"[DEBUG] messages count: {len(messages) if messages else 0}, email_index: {email_index}")
             
             if not messages or email_index >= len(messages):
                 return {'error': f'[1] 해당 번호의 메일이 없습니다. (messages={len(messages) if messages else 0}, email_index={email_index})'}
@@ -243,22 +243,15 @@ class OpenAIService:
             message_id = msg_info['id']
             subject = msg_info['subject']
             sender = msg_info['sender']
-            
-            print(f"[DEBUG] Step 2: Raw 메일 가져오기, message_id={repr(message_id)}, subject={repr(subject)}")
 
             email_message = gmail_service.get_raw_message(message_id)
-            print(f"[DEBUG] email_message is None? {email_message is None}")
             if email_message is None:
                 return {'error': f'[2] 메일 본문을 불러올 수 없습니다. (message_id={message_id})'}
 
-            print(f"[DEBUG] Step 3: 본문 추출")
             text, html = email_parser.extract_text_from_email(email_message)
             full_text = (subject or '') + ' ' + (text or '') + ' ' + (html or '')
-            print(f"[DEBUG] 본문 길이: text={len(text)}, html={len(html)}, full_text={len(full_text)}")
 
-            print(f"[DEBUG] Step 4: 모델 로드 및 예측")
             model_path = os.path.abspath(MODEL_PATH)
-            print(f"[DEBUG] model_path={model_path}, exists={os.path.exists(model_path)}")
             
             if not os.path.exists(model_path):
                 return {'error': f'[3] 피싱 판별 모델 파일이 없습니다. (model_path={model_path})'}
@@ -270,7 +263,6 @@ class OpenAIService:
             pred = classifier.predict(X)[0]
             proba = classifier.predict_proba(X)[0][1] if hasattr(classifier, 'predict_proba') else None
             result = 'phishing' if pred == 1 else 'not phishing'
-            print(f"[DEBUG] 예측 결과: pred={pred}, proba={proba}")
             
             return {
                 'subject': subject, 
@@ -281,14 +273,12 @@ class OpenAIService:
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
-            print(f"[ERROR] 예외 발생: {e}\n{tb}")
+            logger.error(f"피싱 검사 중 예외 발생: {e}")
             return {'error': f'[EXCEPTION] {str(e)}', 'traceback': tb}
 
     def batch_check_phishing_and_delete(self, max_mails: int = 50, threshold: float = 0.7) -> Dict[str, Any]:
         """일괄 피싱 검사 및 삭제"""
         try:
-            print(f"🚀 [일괄 피싱 검사] 최대 {max_mails}개 메일 검사 시작...")
-            
             messages = self.get_gmail_messages()
             if not messages:
                 return {'error': '메일이 없습니다.'}
@@ -296,8 +286,6 @@ class OpenAIService:
             # 검사할 메일 수 제한
             messages_to_check = messages[:max_mails]
             total_checked = len(messages_to_check)
-            
-            print(f"📧 [일괄 피싱 검사] {total_checked}개 메일 검사 중...")
             
             # 모델 로드
             model_path = os.path.abspath(MODEL_PATH)
@@ -313,8 +301,6 @@ class OpenAIService:
             
             for i, msg in enumerate(messages_to_check):
                 try:
-                    print(f"🔍 [일괄 피싱 검사] {i+1}/{total_checked}번째 메일 검사 중...")
-                    
                     message_id = msg['id']
                     subject = msg['subject']
                     sender = msg['sender']
@@ -322,7 +308,6 @@ class OpenAIService:
                     # 메일 본문 가져오기
                     email_message = gmail_service.get_raw_message(message_id)
                     if email_message is None:
-                        print(f"⚠️ [일괄 피싱 검사] {i+1}번째 메일 본문 로드 실패, 건너뜀")
                         continue
                     
                     # 본문 추출
@@ -344,29 +329,21 @@ class OpenAIService:
                             'sender': sender,
                             'probability': float(proba)
                         })
-                        print(f"🚨 [일괄 피싱 검사] 피싱 메일 발견: {subject[:50]}... (확률: {proba:.2f})")
                     
                 except Exception as e:
-                    print(f"❌ [일괄 피싱 검사] {i+1}번째 메일 검사 실패: {str(e)}")
+                    logger.error(f"일괄 피싱 검사 중 {i+1}번째 메일 검사 실패: {str(e)}")
                     continue
-            
-            print(f"✅ [일괄 피싱 검사] 검사 완료! 총 {checked_count}개 검사, 피싱 {len(phishing_mails)}개 발견")
             
             # 피싱 메일 삭제
             deleted_count = 0
             if phishing_mails:
-                print(f"🗑️ [일괄 피싱 검사] {len(phishing_mails)}개 피싱 메일 삭제 시작...")
-                
                 for phishing_mail in phishing_mails:
                     try:
                         success = gmail_service.move_to_trash(phishing_mail['message_id'])
                         if success:
                             deleted_count += 1
-                            print(f"✅ [일괄 피싱 검사] 삭제 성공: {phishing_mail['subject'][:50]}...")
-                        else:
-                            print(f"❌ [일괄 피싱 검사] 삭제 실패: {phishing_mail['subject'][:50]}...")
                     except Exception as e:
-                        print(f"❌ [일괄 피싱 검사] 삭제 중 오류: {str(e)}")
+                        logger.error(f"피싱 메일 삭제 중 오류: {str(e)}")
                         continue
             
             return {
@@ -380,14 +357,12 @@ class OpenAIService:
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
-            print(f"[ERROR] 일괄 피싱 검사 예외 발생: {e}\n{tb}")
+            logger.error(f"일괄 피싱 검사 예외 발생: {e}")
             return {'error': f'일괄 피싱 검사 중 오류: {str(e)}'}
 
     def get_mail_statistics(self, max_mails: int = 100) -> Dict[str, Any]:
         """메일 통계 분석"""
         try:
-            print(f"📊 [메일 통계] 최대 {max_mails}개 메일 분석 시작...")
-            
             messages = self.get_gmail_messages()
             if not messages:
                 return {'error': '메일이 없습니다.'}
@@ -395,8 +370,6 @@ class OpenAIService:
             # 분석할 메일 수 제한
             messages_to_analyze = messages[:max_mails]
             total_messages = len(messages_to_analyze)
-            
-            print(f"📧 [메일 통계] {total_messages}개 메일 분석 중...")
             
             # 기본 통계
             stats = {
@@ -416,7 +389,6 @@ class OpenAIService:
             
             for i, msg in enumerate(messages_to_analyze):
                 try:
-                    print(f"📊 [메일 통계] {i+1}/{total_messages}번째 메일 분석 중...")
                     
                     # 발신자 통계
                     sender = msg.get('sender', 'Unknown')
@@ -461,7 +433,7 @@ class OpenAIService:
                             keyword_counts[keyword] = keyword_counts.get(keyword, 0) + 1
                     
                 except Exception as e:
-                    print(f"❌ [메일 통계] {i+1}번째 메일 분석 실패: {str(e)}")
+                    logger.error(f"메일 통계 분석 중 {i+1}번째 메일 분석 실패: {str(e)}")
                     continue
             
             # 통계 정리
@@ -479,14 +451,12 @@ class OpenAIService:
                 'top_keywords': sorted(keyword_counts.items(), key=lambda x: x[1], reverse=True)[:15]
             }
             
-            print(f"✅ [메일 통계] 분석 완료!")
-            
             return stats
             
         except Exception as e:
             import traceback
             tb = traceback.format_exc()
-            print(f"[ERROR] 메일 통계 분석 예외 발생: {e}\n{tb}")
+            logger.error(f"메일 통계 분석 예외 발생: {e}")
             return {'error': f'메일 통계 분석 중 오류: {str(e)}'}
 
 
@@ -527,15 +497,20 @@ class OpenAIService:
                 summaries.append(f"[{idx+1}] 존재하지 않는 메일입니다.")
         return "\n\n".join(summaries)
 
+    @log_function_call
     def chat_with_function_call(self, user_input: str) -> str:
         """Function calling을 활용한 챗봇 대화 (멀티 에이전트 시스템 연동)"""
         if not self.client:
+            logger.error("OpenAI API 키가 설정되지 않음")
             return "❌ OpenAI API 키가 설정되지 않았습니다."
+        
+        logger.info(f"챗봇 대화 시작: {user_input[:50]}...")
         
         # 멀티 에이전트 시스템 사용 여부 확인
         use_multi_agent = st.session_state.get('use_multi_agent', False)
         
         if use_multi_agent:
+            logger.info("멀티 에이전트 모드로 처리")
             return self._process_with_multi_agent(user_input)
         
         # 기존 Function Calling 방식
@@ -719,7 +694,6 @@ class OpenAIService:
                     return {"success": False, "error": "message_id가 필요합니다."}
             elif function_name == "delete_mails_by_indices":
                 indices = arguments.get("indices", [])
-                print(f"[DEBUG] 삭제 요청된 인덱스: {indices}")
                 if indices:
                     messages = self.get_gmail_messages()
                     if not messages:
@@ -727,8 +701,6 @@ class OpenAIService:
                     
                     valid_indices = [idx for idx in indices if 0 <= idx < len(messages)]
                     invalid_indices = [idx for idx in indices if not (0 <= idx < len(messages))]
-                    
-                    print(f"[DEBUG] 유효한 인덱스: {valid_indices}, 유효하지 않은 번호: {invalid_indices}")
                     
                     if not valid_indices:
                         return {"success": False, "error": f"유효하지 않은 메일 번호: {invalid_indices}"}
@@ -947,11 +919,8 @@ class OpenAIService:
         개별 메일의 링크와 도메인을 웹서치를 통해 위험도 분석
         """
         try:
-            print(f"🔍 [링크분석] {email_index + 1}번 메일 링크 위험도 분석 시작...")
-            
             messages = self.get_gmail_messages()
             if not messages or email_index >= len(messages):
-                print(f"❌ [링크분석] {email_index + 1}번 메일이 존재하지 않음")
                 return "❌ 해당 번호의 메일이 없습니다."
             
             msg = messages[email_index]
@@ -995,7 +964,6 @@ class OpenAIService:
 [사용자에게 권장할 조치사항]
 """
             
-            print("🌐 [링크분석] OpenAI API 호출 중...")
             response = self.client.responses.create(
                 model="gpt-4.1",
                 tools=[{"type": "web_search_preview"}],
@@ -1003,36 +971,28 @@ class OpenAIService:
             )
             
             result = response.output_text
-            print(f"✅ [링크분석] 분석 완료! 결과 길이: {len(result)}자")
-            
             return result
             
         except Exception as e:
-            print(f"💥 [링크분석] 오류 발생: {str(e)}")
+            logger.error(f"링크 위험도 분석 중 오류: {str(e)}")
             return f"❌ 링크 위험도 분석 중 오류: {str(e)}"
 
     def batch_analyze_link_risk(self, n: int = 5) -> List[Dict[str, Any]]:
         """
         최근 n개 메일의 링크와 도메인을 일괄적으로 웹서치로 위험도 분석
         """
-        print(f"🚀 [링크분석] 최근 {n}개 메일 링크 위험도 일괄 분석 시작...")
-        
         messages = self.get_gmail_messages()
         results = []
         
         for i, msg in enumerate(messages[:n]):
-            print(f"📧 [링크분석] {i+1}/{n}번째 메일 분석 중...")
-            
             subject = msg.get('subject', '')
-            print(f"   제목: {subject[:50]}...")
             
             try:
                 # 개별 메일 링크 분석
                 analysis_result = self.analyze_link_risk(i)
-                print(f"   ✅ [링크분석] {i+1}번째 메일 분석 완료")
                 
             except Exception as e:
-                print(f"   💥 [링크분석] {i+1}번째 메일 분석 실패: {str(e)}")
+                logger.error(f"일괄 링크 분석 중 {i+1}번째 메일 분석 실패: {str(e)}")
                 analysis_result = f"분석 실패: {str(e)}"
             
             results.append({
@@ -1041,7 +1001,6 @@ class OpenAIService:
                 "link_analysis": analysis_result
             })
         
-        print(f"🎉 [링크분석] 전체 {len(results)}개 메일 링크 위험도 분석 완료!")
         return results
 
     def web_search_mail_content(self, email_index: int, search_query: str = "") -> str:
@@ -1049,11 +1008,8 @@ class OpenAIService:
         메일의 전체 내용을 웹서치를 통해 자유롭게 분석
         """
         try:
-            print(f"🔍 [웹서치] {email_index + 1}번 메일 전체 내용 분석 시작...")
-            
             messages = self.get_gmail_messages()
             if not messages or email_index >= len(messages):
-                print(f"❌ [웹서치] {email_index + 1}번 메일이 존재하지 않음")
                 return "❌ 해당 번호의 메일이 없습니다."
             
             msg = messages[email_index]
@@ -1072,11 +1028,9 @@ class OpenAIService:
             if search_query:
                 # 특정 검색어가 있으면 해당 내용만 사용
                 search_content = search_query
-                print(f"🔍 [웹서치] 특정 검색어 분석: {search_query[:50]}...")
             else:
                 # 검색어가 없으면 메일 전체 내용 사용 (길이 제한)
                 search_content = body_text[:2000]  # 처음 2000자만 사용
-                print(f"🔍 [웹서치] 메일 전체 내용 분석 (처음 2000자)")
             
             # 웹서치 분석 수행
             web_search_prompt = f"""
@@ -1102,7 +1056,6 @@ class OpenAIService:
 [관련된 배경 지식이나 참고사항]
 """
             
-            print("🌐 [웹서치] OpenAI API 호출 중...")
             response = self.client.responses.create(
                 model="gpt-4.1",
                 tools=[{"type": "web_search_preview"}],
@@ -1110,12 +1063,10 @@ class OpenAIService:
             )
             
             result = response.output_text
-            print(f"✅ [웹서치] 분석 완료! 결과 길이: {len(result)}자")
-            
             return result
             
         except Exception as e:
-            print(f"💥 [웹서치] 오류 발생: {str(e)}")
+            logger.error(f"웹서치 분석 중 오류: {str(e)}")
             return f"❌ 웹서치 분석 중 오류: {str(e)}"
 
 # 전역 OpenAI 서비스 인스턴스

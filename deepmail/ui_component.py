@@ -13,6 +13,7 @@ from gmail_service import gmail_service, email_parser
 from openai_service_clean import openai_service
 from googleapiclient.errors import HttpError
 import pandas as pd
+from logger import logger, activity_logger, performance_logger
 
 # 상수 정의
 CHAT_STYLES = """
@@ -88,7 +89,7 @@ class UIComponents:
         session_defaults = {
             'messages': [],
             'gmail_authenticated': False,
-            'needs_refresh': False,
+    
             'gmail_credentials': None,
             'gmail_messages': None,
             'gmail_last_fetch': None,
@@ -188,42 +189,8 @@ class UIComponents:
 
 
     @staticmethod
-    def _render_chatbot_settings():
-        """챗봇 설정 섹션 - 멀티 에이전트 시스템 포함"""
-        st.markdown("### 🤖 AI 시스템 설정")
-        
-        # 멀티 에이전트 시스템 토글
-        use_multi_agent = st.checkbox(
-            "멀티 에이전트 시스템 사용",
-            value=st.session_state.get('use_multi_agent', False),
-            help="여러 전문 에이전트가 협업하여 작업을 처리합니다"
-        )
-        st.session_state['use_multi_agent'] = use_multi_agent
-        
-        if use_multi_agent:
-            st.info("🔄 멀티 에이전트 모드: 작업이 여러 전문 에이전트에게 위임되어 처리됩니다")
-            
-            # 에이전트 상태 표시
-            if st.button("📊 에이전트 상태 확인"):
-                from agent_system import multi_agent_system
-                status = multi_agent_system.get_system_status()
-                
-                st.markdown("#### 🤖 등록된 에이전트")
-                for agent_name, agent_status in status['agents'].items():
-                    status_icon = "🟢" if agent_status['is_available'] else "🔴"
-                    st.write(f"{status_icon} **{agent_name}**: {agent_status['agent_type']}")
-                    if agent_status['current_task']:
-                        st.write(f"   └ 현재 작업: {agent_status['current_task']}")
-        else:
-            st.info("🔧 기본 모드: OpenAI Function Calling을 사용합니다")
-        
-        # 기본 모델 설정
-        st.session_state["sidebar_model"] = "gpt-4"
-        st.session_state["sidebar_temperature"] = 0.7
-
-    @staticmethod
     def _render_chat_reset():
-       
+        """채팅 리셋 섹션"""
         # 모던 버튼 스타일 적용
         st.markdown("""
         <style>
@@ -253,6 +220,8 @@ class UIComponents:
         """, unsafe_allow_html=True)
         
         if st.button("💬 채팅 기록 초기화"):
+            logger.info("채팅 기록 초기화")
+            activity_logger.log_user_action("clear_chat", {}, "user")
             st.session_state.messages = []
             st.success("✅ 채팅 기록이 초기화되었습니다!")
 
@@ -407,20 +376,29 @@ class UIComponents:
     def handle_gmail_login():
         """Gmail 로그인 처리"""
         try:
+            logger.info("Gmail 로그인 시도")
             creds = gmail_service.authenticate()
             if creds:
                 st.session_state.gmail_credentials = creds
                 st.session_state.gmail_authenticated = True
+                logger.info("Gmail 로그인 성공")
+                activity_logger.log_user_action("gmail_login", {"status": "success"}, "user")
                 UIComponents.refresh_gmail_messages()
                 st.rerun()
             else:
+                logger.error("Gmail 로그인 실패")
+                activity_logger.log_user_action("gmail_login", {"status": "failed"}, "user")
                 st.error("❌ Gmail 로그인 실패")
         except Exception as e:
+            logger.error(f"Gmail 로그인 오류: {str(e)}")
+            activity_logger.log_user_action("gmail_login", {"status": "error", "error": str(e)}, "user")
             st.error(f"❌ Gmail 로그인 오류: {str(e)}")
 
     @staticmethod
     def handle_gmail_logout():
         """Gmail 로그아웃 처리"""
+        logger.info("Gmail 로그아웃")
+        activity_logger.log_user_action("gmail_logout", {"status": "success"}, "user")
         st.session_state.gmail_authenticated = False
         st.session_state.gmail_credentials = None
         st.session_state.gmail_messages = None
@@ -434,6 +412,7 @@ class UIComponents:
         """Gmail 메시지 스마트 새로고침 (캐시 유지 + 새 메일만 추가)"""
         # 설정된 로드 개수 가져오기
         load_count = st.session_state.get('mail_load_count', 30)
+        logger.info(f"메일 새로고침 시작 (로드 개수: {load_count})")
         
         # 현재 캐시된 메일 ID들 확인
         cached_mail_ids = set()
@@ -461,14 +440,15 @@ class UIComponents:
             
             # 새로 추가된 메일이 있으면 알림
             if newly_added_ids:
+                logger.info(f"새 메일 {len(newly_added_ids)}개 추가됨")
                 st.success(f"✅ {len(newly_added_ids)}개의 새 메일이 추가되었습니다!")
             
             # 삭제된 메일이 있으면 알림
             if deleted_mail_ids:
+                logger.info(f"삭제된 메일 {len(deleted_mail_ids)}개")
                 st.info(f"📭 {len(deleted_mail_ids)}개의 메일이 삭제되었습니다.")
             
-            # 새 메일들의 상세 내용 사전 로딩 (백그라운드)
-            UIComponents._preload_mail_contents(newly_added_ids)
+
         
         # 메일 목록 업데이트
         st.session_state.gmail_messages = new_messages
@@ -478,14 +458,11 @@ class UIComponents:
         st.session_state.deleted_mail_ids = set()
         
         # 로딩 완료 알림
+        logger.info(f"메일 새로고침 완료: {len(new_messages)}개 메일")
+        activity_logger.log_user_action("refresh_messages", {"count": len(new_messages), "load_count": load_count}, "user")
         st.success(f"✅ {len(new_messages)}개 메일을 새로고침했습니다! (설정: {load_count}개)")
 
-    @staticmethod
-    def _preload_mail_contents(mail_ids: set):
-        """메일 상세 내용 사전 로딩 (429 에러 방지를 위해 비활성화)"""
-        # 429 에러 방지를 위해 사전 로딩 기능 비활성화
-        # 사용자가 "상세 내용 보기" 버튼을 클릭할 때만 로드
-        pass
+
 
     @staticmethod
     def _clear_mail_cache():
@@ -616,7 +593,7 @@ class UIComponents:
         with col4:
             if st.button("🔍 링크 위험도 분석", help="메일의 링크 위험도를 웹서치로 분석해줘"):
                 UIComponents.process_user_prompt("8번 메일의 링크 위험도를 분석해줘")
-        
+
         # 멀티 에이전트 데모 버튼 추가
         if st.session_state.get('use_multi_agent', False):
             st.markdown("---")
